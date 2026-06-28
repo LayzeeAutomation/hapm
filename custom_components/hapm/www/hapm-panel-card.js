@@ -1,13 +1,17 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.12
+ * HAPM Pocket Money Panel Card  v0.1.13
  *
- * Architecture:
- *   _buildDOM()  — called ONCE on first render, creates all DOM nodes incl. modals
- *   _updateDOM() — called on every subsequent hass() update, patches only changed nodes
- *   Modals are permanent <div> nodes; shown/hidden with a CSS class, never recreated.
+ * Fixes vs 0.1.12:
+ *   1. _optimisticPaid uses a timestamp map (not a bare Set) — expires after
+ *      OPTIMISTIC_TTL_MS even if the sensor never reaches zero, preventing the
+ *      balance being stuck at 0 after a failed/stale pay.
+ *   2. Backdrop click no longer closes modals — only the Cancel button does.
+ *      Prevents iOS Safari reflow-bubbled clicks from dismissing sheets.
+ *   3. _updateDOM() skips panel rewrite while any modal is open, so a hass()
+ *      push mid-interaction can never churn the DOM under the user's fingers.
  */
 
-const HAPM_VERSION = '0.1.12';
+const HAPM_VERSION = '0.1.13';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -45,7 +49,6 @@ const STYLES = `
     background: var(--ha-card-background, var(--card-background-color));
     border-radius: var(--ha-card-border-radius, 12px); }
 
-  /* topbar */
   .topbar { display:flex; align-items:center; justify-content:space-between;
     padding:12px 16px; border-bottom:1px solid var(--divider-color); }
   .topbar-title { font-weight:700; font-size:15px; display:flex; align-items:center; gap:8px; }
@@ -54,7 +57,6 @@ const STYLES = `
     font-family:inherit; background:rgba(232,175,52,0.15); color:#c9920a; transition:all 150ms; }
   .btn-holiday.active { background:#c9920a; color:#fff; }
 
-  /* child tabs */
   .child-tabs { display:flex; gap:8px; flex-wrap:wrap; padding:16px 16px 0; }
   .child-tab { display:flex; align-items:center; gap:6px; padding:6px 14px;
     border-radius:9999px; border:1.5px solid var(--divider-color); cursor:pointer;
@@ -64,7 +66,6 @@ const STYLES = `
   .child-tab.active { background:var(--primary-color); border-color:var(--primary-color); color:#fff; }
   .dot { width:9px; height:9px; border-radius:9999px; flex-shrink:0; }
 
-  /* kpis */
   .kpi-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr));
     gap:12px; padding:14px 16px; }
   .kpi { background:var(--secondary-background-color); border-radius:10px; padding:12px 14px; }
@@ -74,7 +75,6 @@ const STYLES = `
   .kpi-value.positive { color:var(--success-color,#6daa45); }
   .kpi-sub { font-size:11px; color:var(--secondary-text-color); margin-top:3px; }
 
-  /* nav */
   .nav { display:flex; gap:4px; padding:0 16px; border-bottom:1px solid var(--divider-color); }
   .nav-btn { padding:10px 14px; font-size:13px; font-weight:500; background:none; border:none;
     border-bottom:2px solid transparent; color:var(--secondary-text-color); cursor:pointer;
@@ -85,7 +85,6 @@ const STYLES = `
     background:var(--primary-color); color:#fff; border-radius:9999px;
     font-size:10px; font-weight:700; padding:1px 6px; margin-left:4px; }
 
-  /* panel / chores */
   .panel { padding:14px 16px; }
   .chore-card { background:var(--secondary-background-color); border-radius:10px;
     padding:12px 14px; margin-bottom:10px; display:grid;
@@ -111,7 +110,6 @@ const STYLES = `
   .chore-value { font-weight:700; font-size:15px; color:var(--success-color,#6daa45);
     font-variant-numeric:tabular-nums; white-space:nowrap; }
 
-  /* buttons */
   .btn { display:inline-flex; align-items:center; gap:5px; padding:5px 12px;
     border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; border:none;
     font-family:inherit; transition:all 150ms; }
@@ -124,16 +122,14 @@ const STYLES = `
     background:var(--success-color,#6daa45); color:#fff; border:none;
     border-radius:10px; font-family:inherit; font-weight:700; cursor:pointer; }
 
-  /* empty */
   .empty { text-align:center; padding:32px 16px;
     color:var(--secondary-text-color); font-size:13px; }
   .empty-icon { font-size:32px; margin-bottom:8px; }
 
-  /* ── Modals ── position:fixed escapes any parent overflow/clip ── */
+  /* ── Modals ── */
   .hapm-backdrop { position:fixed; inset:0; z-index:9999;
     background:rgba(0,0,0,0.52); display:flex; align-items:flex-end;
-    justify-content:center; padding-bottom:env(safe-area-inset-bottom,0px);
-    transition:opacity 150ms; }
+    justify-content:center; padding-bottom:env(safe-area-inset-bottom,0px); }
   .hapm-backdrop.hidden { display:none; }
   .hapm-sheet { background:var(--card-background-color,#1c1c1e);
     color:var(--primary-text-color); width:100%; max-width:520px;
@@ -169,7 +165,7 @@ const STYLES = `
     font-weight:700; cursor:pointer; border:none; font-family:inherit; }
   .hapm-btn-cancel { background:var(--secondary-background-color,#3a3a3c);
     color:var(--primary-text-color); }
-  .hapm-btn-ok     { background:#01696f; color:#fff; }
+  .hapm-btn-ok { background:#01696f; color:#fff; }
   .hapm-window-row { display:none; margin-bottom:12px; }
   .hapm-window-row.visible { display:block; }
   .hapm-confirm-msg { font-size:15px; line-height:1.5; margin-bottom:20px;
@@ -181,15 +177,17 @@ class HapmPanelCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._config         = {};
-    this._hass           = null;
-    this._activeChildId  = null;
-    this._view           = 'chores';
-    this._holidayUntil   = null;
-    this._children       = [];
+    this._config        = {};
+    this._hass          = null;
+    this._activeChildId = null;
+    this._view          = 'chores';
+    this._holidayUntil  = null;
+    this._children      = [];
     this._optimisticChores = {};
-    this._optimisticPaid   = new Set();
-    this._domBuilt       = false;
+    // Map of childEntryId -> expiry timestamp (ms).  Expires automatically
+    // after OPTIMISTIC_TTL_MS so a stale flag can never hide the pay button.
+    this._optimisticPaid = new Map();
+    this._domBuilt = false;
   }
 
   setConfig(config) { this._config = config; }
@@ -205,7 +203,7 @@ class HapmPanelCard extends HTMLElement {
     }
   }
 
-  // ── Data sync ────────────────────────────────────────────────────────────────
+  // ── Data sync ─────────────────────────────────────────────────────────────
   _syncFromHass() {
     if (!this._hass) return;
     const now    = Date.now();
@@ -239,8 +237,13 @@ class HapmPanelCard extends HTMLElement {
       const lastPaid     = attrs.last_paid || null;
       const optimistic   = this._optimisticChores[childEntryId] || [];
 
-      // Clear optimistic-paid flag once the sensor genuinely reaches zero
-      if (rawBalance <= 0) this._optimisticPaid.delete(childEntryId);
+      // Expire optimistic-paid flag once TTL passes OR sensor confirms zero
+      const paidExpiry = this._optimisticPaid.get(childEntryId);
+      if (paidExpiry !== undefined) {
+        if (rawBalance <= 0 || now > paidExpiry) {
+          this._optimisticPaid.delete(childEntryId);
+        }
+      }
       const balance = this._optimisticPaid.has(childEntryId) ? 0 : rawBalance;
 
       children.push({ childEntryId, childName, colour, currency, balance,
@@ -264,33 +267,31 @@ class HapmPanelCard extends HTMLElement {
     catch (e) { console.error('HAPM service error', service, e); }
   }
 
-  // ── Build DOM (called ONCE) ───────────────────────────────────────────────────
+  _anyModalOpen() {
+    return ['modal-add','modal-holiday','modal-pay'].some(
+      id => !this.shadowRoot.getElementById(id)?.classList.contains('hidden')
+    );
+  }
+
+  // ── Build DOM — called ONCE ──────────────────────────────────────────────────
   _buildDOM() {
     const sr = this.shadowRoot;
     sr.innerHTML = '';
 
-    // Styles
     const style = document.createElement('style');
     style.textContent = STYLES;
     sr.appendChild(style);
 
-    // Card shell
     const card = document.createElement('ha-card');
     card.className = 'hapm';
     sr.appendChild(card);
 
-    // Topbar
     card.insertAdjacentHTML('beforeend', `
       <div class="topbar">
         <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
         <button class="btn-holiday" id="btn-holiday">🏖 Holiday Mode</button>
-      </div>`);
-
-    // Child tabs container
-    card.insertAdjacentHTML('beforeend', '<div class="child-tabs" id="child-tabs"></div>');
-
-    // KPI row
-    card.insertAdjacentHTML('beforeend', `
+      </div>
+      <div class="child-tabs" id="child-tabs"></div>
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">Balance</div>
           <div class="kpi-value" id="kpi-balance">£0.00</div>
@@ -301,21 +302,17 @@ class HapmPanelCard extends HTMLElement {
         <div class="kpi"><div class="kpi-label">Last Paid</div>
           <div class="kpi-value" id="kpi-lastpaid" style="font-size:14px">—</div>
           <div class="kpi-sub">&nbsp;</div></div>
-      </div>`);
-
-    // Nav
-    card.insertAdjacentHTML('beforeend', `
+      </div>
       <div class="nav">
-        <button class="nav-btn active" id="nav-chores" data-view="chores">
+        <button class="nav-btn active" id="nav-chores">
           Chores<span class="badge" id="nav-badge" style="display:none"></span>
         </button>
-        <button class="nav-btn" id="nav-ledger" data-view="ledger">Ledger</button>
-      </div>`);
+        <button class="nav-btn" id="nav-ledger">Ledger</button>
+      </div>
+      <div class="panel" id="panel"></div>`);
 
-    // Panel
-    card.insertAdjacentHTML('beforeend', '<div class="panel" id="panel"></div>');
-
-    // ── Modals (mounted once, outside ha-card so position:fixed works) ──────────
+    // Modals — outside ha-card so position:fixed is never clipped
+    // NOTE: no click handler on .hapm-backdrop — only Cancel buttons close modals.
     sr.insertAdjacentHTML('beforeend', `
       <div class="hapm-backdrop hidden" id="modal-add">
         <div class="hapm-sheet">
@@ -381,29 +378,26 @@ class HapmPanelCard extends HTMLElement {
         </div>
       </div>`);
 
-    // Bind all events ONCE here
     this._bindEvents();
-
-    // Fill in initial data
     this._updateDOM();
   }
 
-  // ── Update DOM (called on every hass update) ─────────────────────────────────
+  // ── Update DOM — surgical patches only, skips panel if modal open ───────────────
   _updateDOM() {
     const sr    = this.shadowRoot;
     const child = this._activeChild;
 
-    // ── Holiday button ──
-    const btnHoliday = sr.getElementById('btn-holiday');
-    if (btnHoliday) {
+    // Holiday button
+    const btnH = sr.getElementById('btn-holiday');
+    if (btnH) {
       const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
-      btnHoliday.textContent = active
+      btnH.textContent = active
         ? `🏖 Holiday — ${daysRemaining(this._holidayUntil)}d left`
         : '🏖 Holiday Mode';
-      btnHoliday.classList.toggle('active', !!active);
+      btnH.classList.toggle('active', !!active);
     }
 
-    // ── Child tabs ──
+    // Child tabs
     const tabsEl = sr.getElementById('child-tabs');
     if (tabsEl) {
       tabsEl.innerHTML = this._children.map(c => `
@@ -417,7 +411,7 @@ class HapmPanelCard extends HTMLElement {
         el.addEventListener('click', e => this._handleAction(e)));
     }
 
-    // ── KPIs ──
+    // KPIs
     if (child) {
       const balEl = sr.getElementById('kpi-balance');
       if (balEl) {
@@ -431,36 +425,33 @@ class HapmPanelCard extends HTMLElement {
       if (dueSubEl) dueSubEl.textContent = 'chore' + (n !== 1 ? 's' : '');
       const lpEl = sr.getElementById('kpi-lastpaid');
       if (lpEl) lpEl.textContent = child.lastPaid ? fmtDate(child.lastPaid) : '—';
-
-      // Badge
       const badge = sr.getElementById('nav-badge');
-      if (badge) {
-        badge.textContent = n;
-        badge.style.display = n ? '' : 'none';
-      }
+      if (badge) { badge.textContent = n; badge.style.display = n ? '' : 'none'; }
     }
 
-    // ── Nav active state ──
+    // Nav active
     sr.getElementById('nav-chores')?.classList.toggle('active', this._view === 'chores');
     sr.getElementById('nav-ledger')?.classList.toggle('active', this._view === 'ledger');
 
-    // ── Panel content ──
+    // Panel — skip rewrite if a modal is open to avoid disrupting user interaction
+    if (this._anyModalOpen()) return;
+
     const panel = sr.getElementById('panel');
-    if (panel) {
-      if (this._view === 'chores') {
-        panel.innerHTML = this._choresPanelHTML(child);
-        panel.querySelectorAll('[data-action]').forEach(el =>
-          el.addEventListener('click', e => this._handleAction(e)));
-      } else {
-        panel.innerHTML = `
-          <div style="margin-bottom:10px"><strong style="font-size:13px">Payment Ledger</strong></div>
-          <div class="empty" style="padding:16px"><div class="empty-icon">📒</div>
-            Full ledger in sensor attribute:<br><br>
-            <code style="font-size:11px;background:var(--secondary-background-color);padding:4px 8px;border-radius:6px">
-              sensor.&lt;child&gt;_pocket_money_balance → ledger
-            </code>
-          </div>`;
-      }
+    if (!panel) return;
+
+    if (this._view === 'chores') {
+      panel.innerHTML = this._choresPanelHTML(child);
+      panel.querySelectorAll('[data-action]').forEach(el =>
+        el.addEventListener('click', e => this._handleAction(e)));
+    } else {
+      panel.innerHTML = `
+        <div style="margin-bottom:10px"><strong style="font-size:13px">Payment Ledger</strong></div>
+        <div class="empty" style="padding:16px"><div class="empty-icon">📒</div>
+          Full ledger in sensor attribute:<br><br>
+          <code style="font-size:11px;background:var(--secondary-background-color);padding:4px 8px;border-radius:6px">
+            sensor.&lt;child&gt;_pocket_money_balance → ledger
+          </code>
+        </div>`;
     }
   }
 
@@ -510,15 +501,17 @@ class HapmPanelCard extends HTMLElement {
     </div>`;
   }
 
-  // ── Bind events (called ONCE after _buildDOM) ─────────────────────────────────
+  // ── Bind events — called ONCE ─────────────────────────────────────────────────
   _bindEvents() {
     const sr = this.shadowRoot;
 
-    // Nav buttons
-    sr.getElementById('nav-chores')?.addEventListener('click', () => { this._view = 'chores'; this._updateDOM(); });
-    sr.getElementById('nav-ledger')?.addEventListener('click', () => { this._view = 'ledger'; this._updateDOM(); });
+    sr.getElementById('nav-chores')?.addEventListener('click', () => {
+      this._view = 'chores'; this._updateDOM();
+    });
+    sr.getElementById('nav-ledger')?.addEventListener('click', () => {
+      this._view = 'ledger'; this._updateDOM();
+    });
 
-    // Holiday button
     sr.getElementById('btn-holiday')?.addEventListener('click', () => {
       const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
       if (active) {
@@ -532,7 +525,7 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
-    // ── Add chore modal ──
+    // Add chore modal
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value) || 1;
@@ -569,7 +562,7 @@ class HapmPanelCard extends HTMLElement {
       this._callService('add_chore', svcData);
     });
 
-    // ── Holiday modal ──
+    // Holiday modal
     sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
     sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
       const days = parseInt(sr.getElementById('m-holiday-days').value) || 7;
@@ -581,20 +574,21 @@ class HapmPanelCard extends HTMLElement {
       this._updateDOM();
     });
 
-    // ── Pay modal ──
+    // Pay modal
     sr.getElementById('m-pay-cancel')?.addEventListener('click',  () => this._closeModal('modal-pay'));
     sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
       const child = this._activeChild;
       if (!child) return;
       this._closeModal('modal-pay');
-      this._optimisticPaid.add(child.childEntryId);
+      // Store expiry timestamp so flag auto-clears after TTL
+      this._optimisticPaid.set(child.childEntryId, Date.now() + OPTIMISTIC_TTL_MS);
       this._syncFromHass();
       this._updateDOM();
       this._callService('mark_paid', { child_entry_id: child.childEntryId });
     });
   }
 
-  // ── Action dispatcher (for dynamically rendered elements) ────────────────────
+  // ── Action dispatcher for dynamically-rendered elements ───────────────────────
   _handleAction(e) {
     const el     = e.currentTarget;
     const action = el.dataset.action;
@@ -607,13 +601,11 @@ class HapmPanelCard extends HTMLElement {
         break;
 
       case 'open-add-form': {
-        // Reset form
         sr.getElementById('m-name').value  = '';
         sr.getElementById('m-value').value = '';
         sr.getElementById('m-recur').value = 'weekly';
         sr.getElementById('m-occ').value   = '1';
         sr.getElementById('m-window-row').classList.remove('visible');
-        // Rebuild child checkboxes
         sr.getElementById('m-children').innerHTML = this._children.map(c => `
           <label class="hapm-child-row">
             <input type="checkbox" value="${esc(c.childEntryId)}"
