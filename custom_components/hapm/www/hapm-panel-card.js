@@ -1,17 +1,13 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.13
+ * HAPM Pocket Money Panel Card  v0.1.14
  *
- * Fixes vs 0.1.12:
- *   1. _optimisticPaid uses a timestamp map (not a bare Set) — expires after
- *      OPTIMISTIC_TTL_MS even if the sensor never reaches zero, preventing the
- *      balance being stuck at 0 after a failed/stale pay.
- *   2. Backdrop click no longer closes modals — only the Cancel button does.
- *      Prevents iOS Safari reflow-bubbled clicks from dismissing sheets.
- *   3. _updateDOM() skips panel rewrite while any modal is open, so a hass()
- *      push mid-interaction can never churn the DOM under the user's fingers.
+ * Fix vs 0.1.13:
+ *   ShadowRoot does not support insertAdjacentHTML on iOS Safari — replaced
+ *   with createElement/appendChild for the modals container.
+ *   Also guards customElements.define against double-registration.
  */
 
-const HAPM_VERSION = '0.1.13';
+const HAPM_VERSION = '0.1.14';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -177,17 +173,15 @@ class HapmPanelCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._config        = {};
-    this._hass          = null;
-    this._activeChildId = null;
-    this._view          = 'chores';
-    this._holidayUntil  = null;
-    this._children      = [];
+    this._config           = {};
+    this._hass             = null;
+    this._activeChildId    = null;
+    this._view             = 'chores';
+    this._holidayUntil     = null;
+    this._children         = [];
     this._optimisticChores = {};
-    // Map of childEntryId -> expiry timestamp (ms).  Expires automatically
-    // after OPTIMISTIC_TTL_MS so a stale flag can never hide the pay button.
-    this._optimisticPaid = new Map();
-    this._domBuilt = false;
+    this._optimisticPaid   = new Map();
+    this._domBuilt         = false;
   }
 
   setConfig(config) { this._config = config; }
@@ -209,7 +203,6 @@ class HapmPanelCard extends HTMLElement {
     const now    = Date.now();
     const states = this._hass.states;
 
-    // Age out optimistic chores
     for (const childId of Object.keys(this._optimisticChores)) {
       const dueSensorId = Object.keys(states).find(id =>
         id.startsWith('sensor.') && id.endsWith('_chores_due') &&
@@ -227,8 +220,8 @@ class HapmPanelCard extends HTMLElement {
     for (const [entityId, state] of Object.entries(states)) {
       if (!entityId.startsWith('sensor.') || !entityId.endsWith('_pocket_money_balance')) continue;
       const attrs        = state.attributes || {};
-      const childEntryId = attrs.entry_id   || entityId;
-      const childName    = attrs.child_name || entityId.replace('sensor.','').replace('_pocket_money_balance','');
+      const childEntryId = attrs.entry_id      || entityId;
+      const childName    = attrs.child_name    || entityId.replace('sensor.','').replace('_pocket_money_balance','');
       const colour       = attrs.avatar_colour || 'teal';
       const currency     = attrs.currency      || CURRENCY_DEFAULT;
       const rawBalance   = parseFloat(state.state) || 0;
@@ -237,12 +230,9 @@ class HapmPanelCard extends HTMLElement {
       const lastPaid     = attrs.last_paid || null;
       const optimistic   = this._optimisticChores[childEntryId] || [];
 
-      // Expire optimistic-paid flag once TTL passes OR sensor confirms zero
       const paidExpiry = this._optimisticPaid.get(childEntryId);
       if (paidExpiry !== undefined) {
-        if (rawBalance <= 0 || now > paidExpiry) {
-          this._optimisticPaid.delete(childEntryId);
-        }
+        if (rawBalance <= 0 || now > paidExpiry) this._optimisticPaid.delete(childEntryId);
       }
       const balance = this._optimisticPaid.has(childEntryId) ? 0 : rawBalance;
 
@@ -273,7 +263,7 @@ class HapmPanelCard extends HTMLElement {
     );
   }
 
-  // ── Build DOM — called ONCE ──────────────────────────────────────────────────
+  // ── Build DOM — called ONCE ──────────────────────────────────────────────
   _buildDOM() {
     const sr = this.shadowRoot;
     sr.innerHTML = '';
@@ -282,11 +272,10 @@ class HapmPanelCard extends HTMLElement {
     style.textContent = STYLES;
     sr.appendChild(style);
 
+    // Main card
     const card = document.createElement('ha-card');
     card.className = 'hapm';
-    sr.appendChild(card);
-
-    card.insertAdjacentHTML('beforeend', `
+    card.innerHTML = `
       <div class="topbar">
         <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
         <button class="btn-holiday" id="btn-holiday">🏖 Holiday Mode</button>
@@ -304,16 +293,16 @@ class HapmPanelCard extends HTMLElement {
           <div class="kpi-sub">&nbsp;</div></div>
       </div>
       <div class="nav">
-        <button class="nav-btn active" id="nav-chores">
-          Chores<span class="badge" id="nav-badge" style="display:none"></span>
-        </button>
+        <button class="nav-btn active" id="nav-chores">Chores<span class="badge" id="nav-badge" style="display:none"></span></button>
         <button class="nav-btn" id="nav-ledger">Ledger</button>
       </div>
-      <div class="panel" id="panel"></div>`);
+      <div class="panel" id="panel"></div>`;
+    sr.appendChild(card);
 
-    // Modals — outside ha-card so position:fixed is never clipped
-    // NOTE: no click handler on .hapm-backdrop — only Cancel buttons close modals.
-    sr.insertAdjacentHTML('beforeend', `
+    // Modals — appended as a sibling div to ha-card inside shadow root.
+    // Cannot use sr.insertAdjacentHTML — ShadowRoot does not support it on iOS Safari.
+    const modals = document.createElement('div');
+    modals.innerHTML = `
       <div class="hapm-backdrop hidden" id="modal-add">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
@@ -376,18 +365,18 @@ class HapmPanelCard extends HTMLElement {
             <button class="hapm-btn hapm-btn-ok"     id="m-pay-submit">Confirm Pay</button>
           </div>
         </div>
-      </div>`);
+      </div>`;
+    sr.appendChild(modals);
 
     this._bindEvents();
     this._updateDOM();
   }
 
-  // ── Update DOM — surgical patches only, skips panel if modal open ───────────────
+  // ── Update DOM — surgical patches only, skips panel if modal open ──────────
   _updateDOM() {
     const sr    = this.shadowRoot;
     const child = this._activeChild;
 
-    // Holiday button
     const btnH = sr.getElementById('btn-holiday');
     if (btnH) {
       const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
@@ -397,7 +386,6 @@ class HapmPanelCard extends HTMLElement {
       btnH.classList.toggle('active', !!active);
     }
 
-    // Child tabs
     const tabsEl = sr.getElementById('child-tabs');
     if (tabsEl) {
       tabsEl.innerHTML = this._children.map(c => `
@@ -411,7 +399,6 @@ class HapmPanelCard extends HTMLElement {
         el.addEventListener('click', e => this._handleAction(e)));
     }
 
-    // KPIs
     if (child) {
       const balEl = sr.getElementById('kpi-balance');
       if (balEl) {
@@ -429,11 +416,9 @@ class HapmPanelCard extends HTMLElement {
       if (badge) { badge.textContent = n; badge.style.display = n ? '' : 'none'; }
     }
 
-    // Nav active
     sr.getElementById('nav-chores')?.classList.toggle('active', this._view === 'chores');
     sr.getElementById('nav-ledger')?.classList.toggle('active', this._view === 'ledger');
 
-    // Panel — skip rewrite if a modal is open to avoid disrupting user interaction
     if (this._anyModalOpen()) return;
 
     const panel = sr.getElementById('panel');
@@ -501,7 +486,7 @@ class HapmPanelCard extends HTMLElement {
     </div>`;
   }
 
-  // ── Bind events — called ONCE ─────────────────────────────────────────────────
+  // ── Bind events — called ONCE ────────────────────────────────────────────
   _bindEvents() {
     const sr = this.shadowRoot;
 
@@ -525,7 +510,6 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
-    // Add chore modal
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value) || 1;
@@ -562,7 +546,6 @@ class HapmPanelCard extends HTMLElement {
       this._callService('add_chore', svcData);
     });
 
-    // Holiday modal
     sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
     sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
       const days = parseInt(sr.getElementById('m-holiday-days').value) || 7;
@@ -574,13 +557,11 @@ class HapmPanelCard extends HTMLElement {
       this._updateDOM();
     });
 
-    // Pay modal
-    sr.getElementById('m-pay-cancel')?.addEventListener('click',  () => this._closeModal('modal-pay'));
+    sr.getElementById('m-pay-cancel')?.addEventListener('click', () => this._closeModal('modal-pay'));
     sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
       const child = this._activeChild;
       if (!child) return;
       this._closeModal('modal-pay');
-      // Store expiry timestamp so flag auto-clears after TTL
       this._optimisticPaid.set(child.childEntryId, Date.now() + OPTIMISTIC_TTL_MS);
       this._syncFromHass();
       this._updateDOM();
@@ -588,7 +569,7 @@ class HapmPanelCard extends HTMLElement {
     });
   }
 
-  // ── Action dispatcher for dynamically-rendered elements ───────────────────────
+  // ── Action dispatcher ────────────────────────────────────────────────────
   _handleAction(e) {
     const el     = e.currentTarget;
     const action = el.dataset.action;
@@ -649,15 +630,21 @@ class HapmPanelCard extends HTMLElement {
   static getStubConfig() { return {}; }
 }
 
-customElements.define('hapm-panel-card', HapmPanelCard);
+// Guard against double-registration during Lovelace hot-reload
+if (!customElements.get('hapm-panel-card')) {
+  customElements.define('hapm-panel-card', HapmPanelCard);
+}
+
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: 'hapm-panel-card',
-  name: 'HAPM Pocket Money Panel',
-  description: 'Track chores and pocket money balances for your children.',
-  preview: false,
-  documentationURL: 'https://github.com/LayzeeAutomation/hapm',
-});
+if (!window.customCards.find(c => c.type === 'hapm-panel-card')) {
+  window.customCards.push({
+    type: 'hapm-panel-card',
+    name: 'HAPM Pocket Money Panel',
+    description: 'Track chores and pocket money balances for your children.',
+    preview: false,
+    documentationURL: 'https://github.com/LayzeeAutomation/hapm',
+  });
+}
 console.info(
   `%c HAPM PANEL CARD %c v${HAPM_VERSION} `,
   'background:#01696f;color:#fff;padding:2px 6px;border-radius:4px 0 0 4px;font-weight:700',
