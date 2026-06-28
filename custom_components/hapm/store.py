@@ -11,6 +11,7 @@ from homeassistant.helpers.storage import Store
 from .const import (
     DOMAIN,
     EVENT_PAYMENT_MADE,
+    RECURRENCE_MANUAL,
     STORAGE_KEY_CHORES,
     STORAGE_KEY_GLOBAL,
     STORAGE_KEY_LEDGER,
@@ -108,9 +109,20 @@ class HAPMStore:
             await self.async_save()
 
     async def async_resume_chore(self, chore_id: str) -> None:
+        """Resume a paused chore and make it immediately due.
+
+        For recurring chores, next_due is reset to utcnow() so the chore
+        appears in _get_due_chores straight away rather than staying hidden
+        until the original future next_due date arrives.
+        Manual chores always show as due (next_due is unused), so no change
+        is needed for those.
+        """
         chore = self._chores.get(chore_id)
         if chore:
             chore.paused_until = None
+            if chore.recurrence != RECURRENCE_MANUAL and chore.next_due is not None:
+                # Reset to now so the sensor's next_due > now guard is satisfied
+                chore.next_due = datetime.utcnow()
             await self.async_save()
 
     def is_paused(self, chore: Chore) -> bool:
