@@ -1,0 +1,229 @@
+add_chore:
+  name: Add Chore
+  description: Create a new chore and assign it to one or more children.
+  fields:
+    name:
+      name: Name
+      description: The chore's display name.
+      required: true
+      example: "Tidy bedroom"
+      selector:
+        text:
+    description:
+      name: Description
+      description: Optional extra detail about the chore.
+      required: false
+      example: "Put all toys away and hoover the floor"
+      selector:
+        text:
+    value:
+      name: Value
+      description: Amount earned per completion (or per occurrence).
+      required: true
+      example: 0.50
+      selector:
+        number:
+          min: 0.01
+          max: 100
+          step: 0.01
+          mode: box
+    assigned_to:
+      name: Assigned To
+      description: List of child config entry IDs to assign this chore to.
+      required: true
+      example: "[\"abc123\"]"
+      selector:
+        object:
+    recurrence:
+      name: Recurrence
+      description: How often this chore recurs.
+      required: false
+      default: manual
+      selector:
+        select:
+          options:
+            - daily
+            - weekly
+            - monthly
+            - manual
+    interval:
+      name: Interval
+      description: Number of recurrence units between repeats (e.g. 2 for every 2 weeks).
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 52
+          step: 1
+          mode: box
+    occurrences_required:
+      name: Occurrences Required
+      description: Number of completions needed within the window. Set to 1 for a standard chore.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 1
+          mode: box
+    occurrence_window_days:
+      name: Occurrence Window (days)
+      description: Number of days within which all occurrences must be completed. Required if occurrences_required > 1.
+      required: false
+      example: 7
+      selector:
+        number:
+          min: 1
+          max: 365
+          step: 1
+          mode: box
+    pay_mode:
+      name: Pay Mode
+      description: "per_occurrence credits each completion immediately. on_completion only credits when all occurrences are done."
+      required: false
+      default: per_occurrence
+      selector:
+        select:
+          options:
+            - per_occurrence
+            - on_completion
+    assignment_mode:
+      name: Assignment Mode
+      description: "individual = one child. team = shared between assigned children."
+      required: false
+      default: individual
+      selector:
+        select:
+          options:
+            - individual
+            - team
+    pay_split_mode:
+      name: Pay Split Mode
+      description: "shared = value split equally. full = each child earns the full value. Only relevant for team chores."
+      required: false
+      default: full
+      selector:
+        select:
+          options:
+            - shared
+            - full
+
+complete_chore:
+  name: Complete Chore
+  description: Mark a standard single-occurrence chore as complete and credit the child's balance.
+  fields:
+    chore_id:
+      name: Chore ID
+      description: The ID of the chore to complete.
+      required: true
+      example: "abc123"
+      selector:
+        text:
+    child_entry_id:
+      name: Child Entry ID
+      description: The config entry ID of the child completing the chore.
+      required: true
+      example: "abc123"
+      selector:
+        text:
+    note:
+      name: Note
+      description: Optional note to attach to the ledger event.
+      required: false
+      selector:
+        text:
+
+log_occurrence:
+  name: Log Occurrence
+  description: Log one occurrence toward a multi-occurrence chore.
+  fields:
+    chore_id:
+      name: Chore ID
+      description: The ID of the chore.
+      required: true
+      selector:
+        text:
+    child_entry_id:
+      name: Child Entry ID
+      description: The config entry ID of the child logging the occurrence.
+      required: true
+      selector:
+        text:
+    note:
+      name: Note
+      description: Optional note.
+      required: false
+      selector:
+        text:
+
+mark_paid:
+  name: Mark Paid
+  description: Clear a child's outstanding balance and record a payment event.
+  fields:
+    child_entry_id:
+      name: Child Entry ID
+      description: The config entry ID of the child being paid.
+      required: true
+      selector:
+        text:
+    note:
+      name: Note
+      description: Optional payment note (e.g. 'Paid by bank transfer').
+      required: false
+      selector:
+        text:
+
+pause_chore:
+  name: Pause Chore
+  description: Pause a single chore for a given number of days.
+  fields:
+    chore_id:
+      name: Chore ID
+      description: The ID of the chore to pause.
+      required: true
+      selector:
+        text:
+    days:
+      name: Days
+      description: Number of days to pause the chore for.
+      required: true
+      example: 7
+      selector:
+        number:
+          min: 1
+          max: 365
+          step: 1
+          mode: box
+
+resume_chore:
+  name: Resume Chore
+  description: Immediately lift a pause on a chore.
+  fields:
+    chore_id:
+      name: Chore ID
+      description: The ID of the chore to resume.
+      required: true
+      selector:
+        text:
+
+set_holiday_mode:
+  name: Set Holiday Mode
+  description: Pause all chores globally for a given number of days.
+  fields:
+    days:
+      name: Days
+      description: Number of days to enable holiday mode.
+      required: true
+      example: 14
+      selector:
+        number:
+          min: 1
+          max: 365
+          step: 1
+          mode: box
+
+clear_holiday_mode:
+  name: Clear Holiday Mode
+  description: Immediately lift holiday mode and resume the normal chore schedule.

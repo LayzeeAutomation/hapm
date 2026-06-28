@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import DATA_STORE, DOMAIN, PLATFORMS
+from .services import async_register_services
 from .store import HAPMStore
 
 
@@ -23,11 +24,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up HAPM from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    # Initialise and load the shared store (one instance for the whole integration)
+    # Initialise the shared store once across all child entries
     if DATA_STORE not in hass.data[DOMAIN]:
         store = HAPMStore(hass)
         await store.async_load()
         hass.data[DOMAIN][DATA_STORE] = store
+        # Register services the first time any entry loads
+        async_register_services(hass)
 
     hass.data[DOMAIN][entry.entry_id] = {}
 
@@ -42,11 +45,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
 
     # Remove the store only when no child entries remain
-    remaining = [
-        k for k in hass.data[DOMAIN]
-        if k not in (DATA_STORE,)
-    ]
-    if not remaining and DATA_STORE in hass.data[DOMAIN]:
-        hass.data[DOMAIN].pop(DATA_STORE)
+    remaining = [k for k in hass.data[DOMAIN] if k != DATA_STORE]
+    if not remaining:
+        hass.data[DOMAIN].pop(DATA_STORE, None)
 
     return unload_ok
