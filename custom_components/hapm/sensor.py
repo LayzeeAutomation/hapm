@@ -1,13 +1,29 @@
 """Sensor platform for HAPM - Home Assistant Pocket Money."""
 from __future__ import annotations
 
+import logging
+from datetime import datetime
+
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
+from datetime import timedelta
 
-from .const import CONF_CHILD_NAME, CONF_CURRENCY, DATA_STORE, DEFAULT_CURRENCY, DOMAIN
+from .const import (
+    CONF_AVATAR_COLOUR,
+    CONF_CHILD_NAME,
+    CONF_CURRENCY_SYMBOL,
+    DATA_STORE,
+    DOMAIN,
+    RECURRENCE_MANUAL,
+)
 from .store import HAPMStore
+
+_LOGGER = logging.getLogger(__name__)
+
+SENSOR_UPDATE_INTERVAL = timedelta(minutes=1)
 
 
 async def async_setup_entry(
@@ -15,78 +31,158 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up HAPM sensors for a child."""
-    child_name = entry.data[CONF_CHILD_NAME]
-    currency = entry.data.get(CONF_CURRENCY, DEFAULT_CURRENCY)
+    """Set up HAPM sensors for a child config entry."""
     store: HAPMStore = hass.data[DOMAIN][DATA_STORE]
+    child_name = entry.data[CONF_CHILD_NAME]
+    currency = entry.data.get(CONF_CURRENCY_SYMBOL, "£")
+    colour = entry.data.get(CONF_AVATAR_COLOUR, "teal")
 
-    async_add_entities(
-        [
-            HAPMBalanceSensor(entry, child_name, currency, store),
-            HAPMChoresDueSensor(entry, child_name, store),
-        ],
-        update_before_add=True,
+    balance_sensor = HAPMBalanceSensor(
+        hass, store, entry.entry_id, child_name, currency, colour
     )
+    chores_due_sensor = HAPMChoresDueSensor(
+        hass, store, entry.entry_id, child_name, colour
+    )
+
+    async_add_entities([balance_sensor, chores_due_sensor], update_before_add=True)
 
 
 class HAPMBalanceSensor(SensorEntity):
-    """Current owed pocket money balance for a child."""
+    """Running pocket money balance for one child."""
 
     _attr_state_class = SensorStateClass.TOTAL
-    _attr_icon = "mdi:piggy-bank"
+    _attr_should_poll = False
 
     def __init__(
         self,
-        entry: ConfigEntry,
+        hass: HomeAssistant,
+        store: HAPMStore,
+        child_entry_id: str,
         child_name: str,
         currency: str,
-        store: HAPMStore,
+        colour: str,
     ) -> None:
-        """Initialise the balance sensor."""
-        self._entry = entry
-        self._child_name = child_name
+        self._hass = hass
         self._store = store
-        self._attr_native_unit_of_measurement = currency
+        self._child_entry_id = child_entry_id
+        self._child_name = child_name
+        self._currency = currency
+        self._colour = colour
+        self._attr_unique_id = f"hapm_{child_entry_id}_balance"
         self._attr_name = f"{child_name} Pocket Money Balance"
-        self._attr_unique_id = f"hapm_{entry.entry_id}_balance"
-        self._attr_native_value: float = 0.0
+        self._attr_native_unit_of_measurement = currency
+        self._attr_icon = "mdi:piggy-bank"
+        self._unsub: callable | None = None
 
-    async def async_update(self) -> None:
-        """Read balance from the store."""
-        self._attr_native_value = round(
-            self._store.get_balance(self._entry.entry_id), 2
+    async def async_added_to_hass(self) -> None:
+        self._unsub = async_track_time_interval(
+            self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL
         )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub:
+            self._unsub()
+
+    @callback
+    async def _async_update_and_write(self, _now: datetime) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float:
+        return round(self._store.get_balance(self._child_entry_id), 2)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        ledger = self._store.get_ledger(self._child_entry_id)
+        last_payment = next(
+            (
+                e for e in reversed(ledger)
+                if e.event_type == "payment_made"
+            ),
+            None,
+        )
+        return {
+            "child_name": self._child_name,
+            "avatar_colour": self._colour,
+            "currency": self._currency,
+            "ledger_event_count": len(ledger),
+            "last_paid": last_payment.timestamp.isoformat() if last_payment else None,
+        }
 
 
 class HAPMChoresDueSensor(SensorEntity):
-    """Number of active chores currently due for a child."""
+    """Count of currently active/due chores for one child."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:format-list-checks"
-    _attr_native_unit_of_measurement = "chores"
+    _attr_should_poll = False
 
     def __init__(
         self,
-        entry: ConfigEntry,
-        child_name: str,
+        hass: HomeAssistant,
         store: HAPMStore,
+        child_entry_id: str,
+        child_name: str,
+        colour: str,
     ) -> None:
-        """Initialise the chores due sensor."""
-        self._entry = entry
-        self._child_name = child_name
+        self._hass = hass
         self._store = store
+        self._child_entry_id = child_entry_id
+        self._child_name = child_name
+        self._colour = colour
+        self._attr_unique_id = f"hapm_{child_entry_id}_chores_due"
         self._attr_name = f"{child_name} Chores Due"
-        self._attr_unique_id = f"hapm_{entry.entry_id}_chores_due"
-        self._attr_native_value: int = 0
+        self._attr_native_unit_of_measurement = "chores"
+        self._attr_icon = "mdi:checkbox-marked-circle-outline"
+        self._unsub: callable | None = None
 
-    async def async_update(self) -> None:
-        """Count active due chores for this child."""
-        from datetime import datetime
+    async def async_added_to_hass(self) -> None:
+        self._unsub = async_track_time_interval(
+            self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub:
+            self._unsub()
+
+    @callback
+    async def _async_update_and_write(self, _now: datetime) -> None:
+        self.async_write_ha_state()
+
+    def _get_due_chores(self) -> list:
         now = datetime.utcnow()
-        due = 0
-        for chore in self._store.get_chores_for_child(self._entry.entry_id):
+        due = []
+        for chore in self._store.get_all_chores():
+            if self._child_entry_id not in chore.assigned_to:
+                continue
             if not self._store.is_chore_active(chore):
                 continue
-            if chore.next_due and chore.next_due <= now:
-                due += 1
-        self._attr_native_value = due
+            # Manual chores are always listed; scheduled chores only when due
+            if chore.recurrence != RECURRENCE_MANUAL:
+                if chore.next_due is None or chore.next_due > now:
+                    continue
+            due.append(chore)
+        return due
+
+    @property
+    def native_value(self) -> int:
+        return len(self._get_due_chores())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        due_chores = self._get_due_chores()
+        return {
+            "child_name": self._child_name,
+            "avatar_colour": self._colour,
+            "due_chores": [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "value": c.value,
+                    "recurrence": c.recurrence,
+                    "next_due": c.next_due.isoformat() if c.next_due else None,
+                    "occurrences_required": c.occurrences_required,
+                    "description": c.description,
+                }
+                for c in due_chores
+            ],
+        }
