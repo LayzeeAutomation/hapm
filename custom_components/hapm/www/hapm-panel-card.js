@@ -1,16 +1,15 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.2
+ * HAPM Pocket Money Panel Card  v0.1.3
  * A self-contained Lovelace custom card for the HAPM integration.
  *
  * Usage in Lovelace:
  *   type: custom:hapm-panel-card
  *
  * iOS fix: the "Add Chore" form is rendered as a document.body modal overlay
- * so it is completely outside the shadow-DOM re-render cycle. Lovelace state
- * updates never touch the modal DOM, keeping the keyboard and dropdowns alive.
+ * so it is completely outside the shadow-DOM re-render cycle.
  */
 
-const HAPM_VERSION = '0.1.2';
+const HAPM_VERSION = '0.1.3';
 const CURRENCY_DEFAULT = '£';
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -64,6 +63,7 @@ const STYLES = `
     display: grid; grid-template-columns: 1fr auto; gap: 8px;
     align-items: start; transition: opacity 300ms ease; }
   .chore-card.completing { opacity: 0.35; pointer-events: none; }
+  .chore-card.optimistic { opacity: 0.6; }
   .chore-top { display: flex; align-items: flex-start; gap: 10px; }
   .chore-icon { width: 34px; height: 34px; border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
@@ -112,7 +112,7 @@ const STYLES = `
   .empty-icon { font-size: 32px; margin-bottom: 8px; }
 `;
 
-// Modal styles injected into document.head once — lives outside shadow DOM
+// Modal styles — injected into document.head once, lives outside shadow DOM
 const MODAL_STYLES = `
   .hapm-modal-backdrop {
     position: fixed; inset: 0; z-index: 9999;
@@ -135,12 +135,14 @@ const MODAL_STYLES = `
       background: #2c2c2e !important; color: #f2f2f7 !important;
       border-color: #3a3a3c !important;
     }
+    .hapm-child-checkbox-row { border-color: #3a3a3c !important; }
+    .hapm-modal-btn-cancel { background: #2c2c2e !important; color: #f2f2f7 !important; }
   }
   .hapm-modal-handle { width: 36px; height: 4px; border-radius: 2px;
     background: #ccc; margin: 0 auto 16px; }
   .hapm-modal-title { font-weight: 700; font-size: 17px; margin-bottom: 16px; }
   .hapm-modal-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: #888; margin-bottom: 4px; display: block; }
+    letter-spacing: 0.06em; color: #888; margin-bottom: 6px; display: block; }
   .hapm-modal-input, .hapm-modal-select {
     width: 100%; padding: 10px 12px; font-size: 16px;
     border: 1.5px solid #ddd; border-radius: 10px;
@@ -155,6 +157,18 @@ const MODAL_STYLES = `
   .hapm-modal-row .hapm-modal-input,
   .hapm-modal-row .hapm-modal-select { margin-bottom: 0; }
   .hapm-modal-row-wrap { margin-bottom: 12px; }
+  /* Child checkboxes */
+  .hapm-children-list { display: flex; flex-direction: column; gap: 0;
+    border: 1.5px solid #ddd; border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
+  .hapm-child-checkbox-row { display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px; cursor: pointer; border-bottom: 1px solid #eee; }
+  .hapm-child-checkbox-row:last-child { border-bottom: none; }
+  .hapm-child-checkbox-row input[type=checkbox] {
+    width: 18px; height: 18px; accent-color: #01696f;
+    flex-shrink: 0; cursor: pointer; margin: 0; }
+  .hapm-child-checkbox-label { font-size: 15px; font-weight: 500; flex: 1; cursor: pointer; }
+  .hapm-child-dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
+  /* Actions */
   .hapm-modal-actions { display: flex; gap: 10px; margin-top: 4px; }
   .hapm-modal-btn { flex: 1; padding: 13px; border-radius: 12px; font-size: 15px;
     font-weight: 700; cursor: pointer; border: none; font-family: inherit; }
@@ -162,9 +176,9 @@ const MODAL_STYLES = `
   .hapm-modal-btn-submit { background: #01696f; color: #fff; }
 `;
 
-// ── Colour / icon maps ────────────────────────────────────────────────────────
+// ── Colour / icon maps ───────────────────────────────────────────────────────
 const COLOUR_MAP = {
-  teal: 'var(--primary-color)', blue: '#5591c7', purple: '#7c63d1',
+  teal: '#01696f', blue: '#5591c7', purple: '#7c63d1',
   orange: '#fdab43', gold: '#e8af34', green: '#6daa45',
   red: '#db4437', pink: '#e8619a', grey: '#9e9e9e',
 };
@@ -192,14 +206,10 @@ if (!document.getElementById('hapm-modal-styles')) {
 }
 
 // ── Modal singleton ───────────────────────────────────────────────────────────
-// One modal element shared by all card instances, lives on document.body.
-// Never touched by shadowRoot.innerHTML replacements.
 let _hapmModal = null;
 let _hapmModalCallback = null;
 
-function _getModal() {
-  if (_hapmModal) return _hapmModal;
-
+function _buildModal() {
   const backdrop = document.createElement('div');
   backdrop.className = 'hapm-modal-backdrop hidden';
   backdrop.id = 'hapm-add-chore-modal';
@@ -230,20 +240,12 @@ function _getModal() {
         </div>
       </div>
 
-      <div class="hapm-modal-row hapm-modal-row-wrap">
-        <div>
-          <label class="hapm-modal-label">Occurrences</label>
-          <input class="hapm-modal-input" id="hm-occ" type="number"
-            inputmode="numeric" min="1" value="1">
-        </div>
-        <div>
-          <label class="hapm-modal-label">Assigned To</label>
-          <select class="hapm-modal-select" id="hm-assign">
-            <option value="individual">Individual</option>
-            <option value="team">Team</option>
-          </select>
-        </div>
-      </div>
+      <label class="hapm-modal-label">Occurrences</label>
+      <input class="hapm-modal-input" id="hm-occ" type="number"
+        inputmode="numeric" min="1" value="1">
+
+      <label class="hapm-modal-label">Assign To</label>
+      <div class="hapm-children-list" id="hm-children-list"></div>
 
       <div class="hapm-modal-actions">
         <button class="hapm-modal-btn hapm-modal-btn-cancel" id="hm-cancel">Cancel</button>
@@ -251,43 +253,59 @@ function _getModal() {
       </div>
     </div>
   `;
-
   document.body.appendChild(backdrop);
-  _hapmModal = backdrop;
 
-  // Close on backdrop tap (outside sheet)
-  backdrop.addEventListener('click', e => {
-    if (e.target === backdrop) _closeModal();
-  });
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) _closeModal(); });
   document.getElementById('hm-cancel').addEventListener('click', _closeModal);
-  document.getElementById('hm-submit').addEventListener('click', () => {
-    const name     = document.getElementById('hm-name').value.trim();
-    const value    = parseFloat(document.getElementById('hm-value').value);
-    const recur    = document.getElementById('hm-recur').value;
-    const occ      = parseInt(document.getElementById('hm-occ').value) || 1;
-    const assign   = document.getElementById('hm-assign').value;
-    if (!name || !value) {
-      document.getElementById('hm-name').focus();
-      return;
-    }
-    if (_hapmModalCallback) _hapmModalCallback({ name, value, recur, occ, assign });
-    _closeModal();
-  });
+  document.getElementById('hm-submit').addEventListener('click', _submitModal);
 
   return backdrop;
 }
 
-function _openModal(callback) {
+function _getModal() {
+  if (!_hapmModal) _hapmModal = _buildModal();
+  return _hapmModal;
+}
+
+function _submitModal() {
+  const name  = document.getElementById('hm-name').value.trim();
+  const value = parseFloat(document.getElementById('hm-value').value);
+  const recur = document.getElementById('hm-recur').value;
+  const occ   = parseInt(document.getElementById('hm-occ').value) || 1;
+
+  // Collect checked child IDs
+  const checked = [...document.querySelectorAll('#hm-children-list input[type=checkbox]:checked')];
+  const assignedTo = checked.map(cb => cb.value);
+
+  if (!name || !value) { document.getElementById('hm-name').focus(); return; }
+  if (!assignedTo.length) { return; }  // must have at least one child selected
+
+  if (_hapmModalCallback) _hapmModalCallback({ name, value, recur, occ, assignedTo });
+  _closeModal();
+}
+
+function _openModal(children, activeChildId, callback) {
   const modal = _getModal();
+
   // Reset fields
   document.getElementById('hm-name').value  = '';
   document.getElementById('hm-value').value = '';
   document.getElementById('hm-recur').value = 'weekly';
   document.getElementById('hm-occ').value   = '1';
-  document.getElementById('hm-assign').value = 'individual';
+
+  // Rebuild child checkboxes from live children list
+  const list = document.getElementById('hm-children-list');
+  list.innerHTML = children.map(c => `
+    <label class="hapm-child-checkbox-row">
+      <input type="checkbox" value="${esc(c.childEntryId)}"
+        ${c.childEntryId === activeChildId ? 'checked' : ''}>
+      <span class="hapm-child-dot" style="background:${COLOUR_MAP[c.colour] || COLOUR_MAP.teal}"></span>
+      <span class="hapm-child-checkbox-label">${esc(c.childName)}</span>
+    </label>
+  `).join('');
+
   _hapmModalCallback = callback;
   modal.classList.remove('hidden');
-  // Small delay lets the sheet animate in before focus (avoids iOS scroll jump)
   setTimeout(() => document.getElementById('hm-name').focus(), 80);
 }
 
@@ -307,6 +325,8 @@ class HapmPanelCard extends HTMLElement {
     this._view = 'chores';
     this._holidayMode = false;
     this._children = [];
+    // Optimistic chores: keyed by childEntryId, cleared when sensor updates
+    this._optimisticChores = {};
   }
 
   setConfig(config) { this._config = config; }
@@ -330,7 +350,16 @@ class HapmPanelCard extends HTMLElement {
       const currency = attrs.currency || CURRENCY_DEFAULT;
       const balance = parseFloat(state.state) || 0;
       const dueSensorId = entityId.replace('_pocket_money_balance', '_chores_due');
-      const dueChores = states[dueSensorId]?.attributes?.due_chores || [];
+      const serverChores = states[dueSensorId]?.attributes?.due_chores || [];
+
+      // Merge optimistic chores: keep optimistic ones not yet in server list
+      const optimistic = (this._optimisticChores[childEntryId] || []).filter(
+        o => !serverChores.find(s => s.name === o.name)
+      );
+      // Once server has caught up with all optimistic, clear them
+      if (!optimistic.length) delete this._optimisticChores[childEntryId];
+
+      const dueChores = [...serverChores, ...optimistic];
       const lastPaid = attrs.last_paid || null;
       children.push({ childEntryId, childName, colour, currency, balance, dueChores, lastPaid });
     }
@@ -346,7 +375,11 @@ class HapmPanelCard extends HTMLElement {
     if (!this._hass) return;
     try {
       await this._hass.callService('hapm', service, data);
-      setTimeout(() => this._render(), 600);
+      // Wait 2s for sensor to update then re-sync
+      setTimeout(() => {
+        this._syncFromHass();
+        this._render();
+      }, 2000);
     } catch (e) {
       console.error('HAPM card service error', service, e);
     }
@@ -451,31 +484,32 @@ class HapmPanelCard extends HTMLElement {
 
   _renderChoreCard(c, child) {
     const isMulti = c.occurrences_required > 1;
+    const isOptimistic = !!c._optimistic;
     const dots = isMulti ? Array.from({ length: c.occurrences_required }, () =>
       '<span class="occ-dot"></span>').join('') : '';
     return `
-    <div class="chore-card">
+    <div class="chore-card${isOptimistic ? ' optimistic' : ''}">
       <div>
         <div class="chore-top">
-          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id || '').charCodeAt(0) || 0) % CHORE_ICONS.length]}</div>
+          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id || c.name || '').charCodeAt(0) || 0) % CHORE_ICONS.length]}</div>
           <div>
-            <div class="chore-name">${esc(c.name)}</div>
+            <div class="chore-name">${esc(c.name)}${isOptimistic ? ' <span style="font-size:10px;opacity:0.5">(saving…)</span>' : ''}</div>
             ${c.description ? `<div class="chore-desc">${esc(c.description)}</div>` : ''}
             <div class="chore-meta">
-              ${c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
+              ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
               ${isMulti ? `<span class="pill pill-multi">0/${c.occurrences_required}×</span>` : ''}
-              <span class="pill pill-due">Due</span>
+              ${!isOptimistic ? '<span class="pill pill-due">Due</span>' : ''}
             </div>
             ${isMulti ? `<div class="occ-track">${dots}</div>` : ''}
           </div>
         </div>
-        <div class="chore-actions">
+        ${!isOptimistic ? `<div class="chore-actions">
           ${isMulti
             ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log occurrence</button>`
             : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done ✓</button>`
           }
           <button class="btn btn-ghost" data-action="pause" data-chore="${esc(c.id)}">Pause 7d</button>
-        </div>
+        </div>` : ''}
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
     </div>`;
@@ -512,15 +546,28 @@ class HapmPanelCard extends HTMLElement {
         this._render();
         break;
       case 'open-add-form':
-        _openModal(({ name, value, recur, occ, assign }) => {
+        _openModal(this._children, this._activeChildId, ({ name, value, recur, occ, assignedTo }) => {
+          // Optimistically add chore to each assigned child immediately
+          const optimisticChore = {
+            id: '_opt_' + Date.now(),
+            name, value, recurrence: recur,
+            occurrences_required: occ,
+            _optimistic: true,
+          };
+          assignedTo.forEach(childId => {
+            if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
+            this._optimisticChores[childId].push(optimisticChore);
+          });
+          this._syncFromHass();
+          this._render();
+
+          // Call the service
           this._callService('add_chore', {
             name, value,
             recurrence: recur,
             occurrences_required: occ,
-            assignment_mode: assign,
-            assigned_to: assign === 'team'
-              ? this._children.map(c => c.childEntryId)
-              : [this._activeChildId],
+            assignment_mode: assignedTo.length === this._children.length ? 'team' : 'individual',
+            assigned_to: assignedTo,
           });
         });
         break;
