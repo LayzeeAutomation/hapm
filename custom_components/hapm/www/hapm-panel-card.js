@@ -1,9 +1,10 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.9
- * All modals live inside the Shadow DOM — no document.body or confirm() calls.
+ * HAPM Pocket Money Panel Card  v0.1.10
+ * Modals use position:fixed to escape overflow:hidden on ha-card.
+ * Pay hides optimistically. Holiday modal works.
  */
 
-const HAPM_VERSION = '0.1.9';
+const HAPM_VERSION = '0.1.10';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -34,62 +35,51 @@ const BASE_STYLES = `
   :host { display: block; }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  /* ── Card chrome ── */
   .hapm { font-family: var(--primary-font-family, 'DM Sans', sans-serif);
     font-size: 14px; color: var(--primary-text-color);
     background: var(--ha-card-background, var(--card-background-color));
-    border-radius: var(--ha-card-border-radius, 12px); overflow: hidden;
-    position: relative; }
+    border-radius: var(--ha-card-border-radius, 12px); }
 
-  /* ── Topbar ── */
   .topbar { display: flex; align-items: center; justify-content: space-between;
     padding: 12px 16px; border-bottom: 1px solid var(--divider-color); }
   .topbar-title { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
   .btn-holiday { display: flex; align-items: center; gap: 6px; padding: 6px 12px;
     border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none;
-    font-family: inherit; background: rgba(232,175,52,0.15); color: #c9920a;
-    transition: all 150ms ease; }
+    font-family: inherit; background: rgba(232,175,52,0.15); color: #c9920a; transition: all 150ms; }
   .btn-holiday.active { background: #c9920a; color: #fff; }
 
-  /* ── Child tabs ── */
   .child-tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 16px 16px 0; }
   .child-tab { display: flex; align-items: center; gap: 6px; padding: 6px 14px;
     border-radius: 9999px; border: 1.5px solid var(--divider-color); cursor: pointer;
     font-size: 13px; font-weight: 500; background: none; color: var(--primary-text-color);
-    font-family: inherit; transition: all 150ms ease; }
+    font-family: inherit; transition: all 150ms; }
   .child-tab:hover { border-color: var(--primary-color); color: var(--primary-color); }
   .child-tab.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
   .dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
 
-  /* ── KPIs ── */
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
     gap: 12px; padding: 14px 16px; }
   .kpi { background: var(--secondary-background-color); border-radius: 10px; padding: 12px 14px; }
   .kpi-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--secondary-text-color); margin-bottom: 4px; }
-  .kpi-value { font-size: 22px; font-weight: 700; line-height: 1;
-    font-variant-numeric: tabular-nums lining-nums; }
+  .kpi-value { font-size: 22px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
   .kpi-value.positive { color: var(--success-color, #6daa45); }
   .kpi-sub { font-size: 11px; color: var(--secondary-text-color); margin-top: 3px; }
 
-  /* ── Nav tabs ── */
-  .nav { display: flex; gap: 4px; padding: 0 16px;
-    border-bottom: 1px solid var(--divider-color); }
+  .nav { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid var(--divider-color); }
   .nav-btn { padding: 10px 14px; font-size: 13px; font-weight: 500; background: none; border: none;
     border-bottom: 2px solid transparent; color: var(--secondary-text-color); cursor: pointer;
-    font-family: inherit; transition: all 150ms ease; margin-bottom: -1px; }
+    font-family: inherit; transition: all 150ms; margin-bottom: -1px; }
   .nav-btn:hover { color: var(--primary-text-color); }
   .nav-btn.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
   .badge { display: inline-flex; align-items: center; justify-content: center;
     background: var(--primary-color); color: #fff; border-radius: 9999px;
     font-size: 10px; font-weight: 700; padding: 1px 6px; margin-left: 4px; }
 
-  /* ── Panel / chore cards ── */
   .panel { padding: 14px 16px; }
   .chore-card { background: var(--secondary-background-color); border-radius: 10px;
     padding: 12px 14px; margin-bottom: 10px; display: grid;
-    grid-template-columns: 1fr auto; gap: 8px; align-items: start;
-    transition: opacity 300ms ease; }
+    grid-template-columns: 1fr auto; gap: 8px; align-items: start; transition: opacity 300ms; }
   .chore-card.completing { opacity: 0.35; pointer-events: none; }
   .chore-card.optimistic { opacity: 0.6; }
   .chore-top { display: flex; align-items: flex-start; gap: 10px; }
@@ -111,10 +101,9 @@ const BASE_STYLES = `
   .chore-value { font-weight: 700; font-size: 15px; color: var(--success-color, #6daa45);
     font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-  /* ── Buttons ── */
   .btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px;
     border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none;
-    font-family: inherit; transition: all 150ms ease; }
+    font-family: inherit; transition: all 150ms; }
   .btn-primary { background: var(--primary-color); color: #fff; }
   .btn-primary:hover { filter: brightness(1.1); }
   .btn-ghost { background: transparent; border: 1.5px solid var(--divider-color);
@@ -124,63 +113,58 @@ const BASE_STYLES = `
     background: var(--success-color, #6daa45); color: #fff; border: none;
     border-radius: 10px; font-family: inherit; font-weight: 700; cursor: pointer; }
 
-  /* ── Empty states ── */
-  .empty { text-align: center; padding: 32px 16px;
-    color: var(--secondary-text-color); font-size: 13px; }
+  .empty { text-align: center; padding: 32px 16px; color: var(--secondary-text-color); font-size: 13px; }
   .empty-icon { font-size: 32px; margin-bottom: 8px; }
 
-  /* ══════════════════════════════════════════════
-     MODAL SYSTEM  — lives inside Shadow DOM
-     ══════════════════════════════════════════════ */
-  .hapm-backdrop { position: absolute; inset: 0; z-index: 100;
+  /* ══ MODAL SYSTEM — position:fixed so it escapes overflow:hidden on ha-card ══ */
+  .hapm-backdrop {
+    position: fixed; inset: 0; z-index: 9999;
     background: rgba(0,0,0,0.52);
     display: flex; align-items: flex-end; justify-content: center;
-    border-radius: inherit; overflow: hidden; }
+    padding-bottom: env(safe-area-inset-bottom, 0px); }
   .hapm-backdrop.hidden { display: none; }
-  .hapm-sheet { background: var(--card-background-color, #fff);
+  .hapm-sheet {
+    background: var(--card-background-color, #1c1c1e);
     color: var(--primary-text-color);
-    width: 100%; border-radius: 20px 20px 0 0;
-    padding: 20px 20px 24px;
-    box-shadow: 0 -4px 32px rgba(0,0,0,0.22);
-    max-height: 90%; overflow-y: auto; }
+    width: 100%; max-width: 520px;
+    border-radius: 20px 20px 0 0;
+    padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -4px 32px rgba(0,0,0,0.28);
+    max-height: 85vh; overflow-y: auto; }
   .hapm-handle { width: 36px; height: 4px; border-radius: 2px;
-    background: var(--divider-color, #ccc); margin: 0 auto 16px; }
+    background: var(--divider-color, #555); margin: 0 auto 16px; }
   .hapm-sheet-title { font-weight: 700; font-size: 17px; margin-bottom: 16px; }
   .hapm-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--secondary-text-color); margin-bottom: 6px;
-    display: block; }
+    letter-spacing: 0.06em; color: var(--secondary-text-color); margin-bottom: 6px; display: block; }
   .hapm-input, .hapm-select {
     width: 100%; padding: 10px 12px; font-size: 16px;
-    border: 1.5px solid var(--divider-color, #ddd); border-radius: 10px;
-    font-family: inherit; background: var(--secondary-background-color);
+    border: 1.5px solid var(--divider-color, #555); border-radius: 10px;
+    font-family: inherit; background: var(--secondary-background-color, #2c2c2e);
     color: var(--primary-text-color); margin-bottom: 12px;
     -webkit-appearance: none; appearance: none; }
   .hapm-input:focus, .hapm-select:focus { outline: none; border-color: #01696f; }
-  .hapm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-    margin-bottom: 12px; }
+  .hapm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
   .hapm-row .hapm-input, .hapm-row .hapm-select { margin-bottom: 0; }
   .hapm-children-list { display: flex; flex-direction: column;
-    border: 1.5px solid var(--divider-color, #ddd); border-radius: 10px;
+    border: 1.5px solid var(--divider-color, #555); border-radius: 10px;
     overflow: hidden; margin-bottom: 12px; }
   .hapm-child-row { display: flex; align-items: center; gap: 10px;
     padding: 11px 14px; cursor: pointer;
-    border-bottom: 1px solid var(--divider-color, #eee); }
+    border-bottom: 1px solid var(--divider-color, #444); }
   .hapm-child-row:last-child { border-bottom: none; }
   .hapm-child-row input[type=checkbox] { width: 18px; height: 18px;
     accent-color: #01696f; flex-shrink: 0; cursor: pointer; margin: 0; }
-  .hapm-child-row span.name { font-size: 15px; font-weight: 500; flex: 1; }
+  .hapm-child-row .name { font-size: 15px; font-weight: 500; flex: 1; }
   .hapm-child-dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
   .hapm-actions { display: flex; gap: 10px; margin-top: 4px; }
   .hapm-btn { flex: 1; padding: 13px; border-radius: 12px; font-size: 15px;
     font-weight: 700; cursor: pointer; border: none; font-family: inherit; }
-  .hapm-btn-cancel { background: var(--secondary-background-color);
-    color: var(--primary-text-color); }
+  .hapm-btn-cancel { background: var(--secondary-background-color, #3a3a3c); color: var(--primary-text-color); }
   .hapm-btn-ok { background: #01696f; color: #fff; }
-  .hapm-btn-danger { background: #db4437; color: #fff; }
   .hapm-window-row { display: none; margin-bottom: 12px; }
   .hapm-window-row.visible { display: block; }
-  .hapm-confirm-msg { font-size: 15px; line-height: 1.5;
-    margin-bottom: 20px; text-align: center; }
+  .hapm-confirm-msg { font-size: 15px; line-height: 1.5; margin-bottom: 20px; text-align: center;
+    color: var(--primary-text-color); }
 `;
 
 class HapmPanelCard extends HTMLElement {
@@ -194,6 +178,8 @@ class HapmPanelCard extends HTMLElement {
     this._holidayUntil = null;
     this._children = [];
     this._optimisticChores = {};
+    // Optimistic pay: set of childEntryIds we've just paid (hides button until sensor updates)
+    this._optimisticPaid = new Set();
   }
 
   setConfig(config) { this._config = config; }
@@ -204,12 +190,12 @@ class HapmPanelCard extends HTMLElement {
     this._render();
   }
 
-  // ── Data sync ──────────────────────────────────────────────────────────────
   _syncFromHass() {
     if (!this._hass) return;
     const now = Date.now();
     const states = this._hass.states;
 
+    // Clean up optimistic chores
     for (const childId of Object.keys(this._optimisticChores)) {
       const dueSensorId = Object.keys(states).find(id =>
         id.startsWith('sensor.') && id.endsWith('_chores_due') &&
@@ -223,19 +209,27 @@ class HapmPanelCard extends HTMLElement {
       else delete this._optimisticChores[childId];
     }
 
+    // Build children
     const children = [];
     for (const [entityId, state] of Object.entries(states)) {
       if (!entityId.startsWith('sensor.') || !entityId.endsWith('_pocket_money_balance')) continue;
-      const attrs = state.attributes || {};
+      const attrs        = state.attributes || {};
       const childEntryId = attrs.entry_id || entityId;
       const childName    = attrs.child_name || entityId.replace('sensor.','').replace('_pocket_money_balance','');
       const colour       = attrs.avatar_colour || 'teal';
       const currency     = attrs.currency || CURRENCY_DEFAULT;
-      const balance      = parseFloat(state.state) || 0;
+      const rawBalance   = parseFloat(state.state) || 0;
       const dueSensorId  = entityId.replace('_pocket_money_balance', '_chores_due');
       const serverChores = states[dueSensorId]?.attributes?.due_chores || [];
       const lastPaid     = attrs.last_paid || null;
       const optimistic   = this._optimisticChores[childEntryId] || [];
+
+      // If sensor balance has reached zero, clear the optimistic paid flag
+      if (rawBalance <= 0) this._optimisticPaid.delete(childEntryId);
+
+      // Show balance as 0 optimistically if we just paid
+      const balance = this._optimisticPaid.has(childEntryId) ? 0 : rawBalance;
+
       children.push({ childEntryId, childName, colour, currency, balance,
                        dueChores: [...serverChores, ...optimistic], lastPaid });
     }
@@ -257,7 +251,11 @@ class HapmPanelCard extends HTMLElement {
     return this._children.find(c => c.childEntryId === this._activeChildId) || this._children[0];
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  _sr(id) { return this.shadowRoot.getElementById(id); }
+  _openModal(id)  { const el = this._sr(id); if (el) el.classList.remove('hidden'); }
+  _closeModal(id) { const el = this._sr(id); if (el) el.classList.add('hidden'); }
+
+  // ── Render ─────────────────────────────────────────────────────
   _render() {
     const child = this._activeChild;
     this.shadowRoot.innerHTML = `
@@ -270,14 +268,16 @@ class HapmPanelCard extends HTMLElement {
         <div class="panel">
           ${this._view === 'chores' ? this._renderChores(child) : this._renderLedger()}
         </div>
-        ${this._renderModals(child)}
-      </ha-card>`;
+      </ha-card>
+      ${this._renderModals(child)}`;
     this._bindEvents();
   }
 
   _renderTopbar() {
     const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
-    const label  = active ? `🏖 Holiday — ${daysRemaining(this._holidayUntil)}d left` : '🏖 Holiday Mode';
+    const label  = active
+      ? `🏖 Holiday — ${daysRemaining(this._holidayUntil)}d left`
+      : '🏖 Holiday Mode';
     return `<div class="topbar">
       <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
       <button class="btn-holiday${active ? ' active' : ''}" data-action="toggle-holiday">${label}</button>
@@ -328,7 +328,7 @@ class HapmPanelCard extends HTMLElement {
   }
 
   _renderChores(child) {
-    if (!child) return `<div class="empty"><div class="empty-icon">👶</div>No children configured yet.<br>Add a child in Settings → Integrations → HAPM.</div>`;
+    if (!child) return `<div class="empty"><div class="empty-icon">👶</div>No children configured.<br>Add a child in Settings → Integrations → HAPM.</div>`;
     const chores = child.dueChores || [];
     const payBtn = child.balance > 0
       ? `<button class="btn-pay" data-action="open-pay">💸 Pay ${esc(child.childName)} — ${fmtMoney(child.balance, child.currency)}</button>`
@@ -338,7 +338,9 @@ class HapmPanelCard extends HTMLElement {
         <strong style="font-size:13px">Due Chores</strong>
         <button class="btn btn-ghost" data-action="open-add-form">+ Add Chore</button>
       </div>
-      ${chores.length ? chores.map(c => this._renderChoreCard(c, child)).join('') : '<div class="empty"><div class="empty-icon">✅</div>All done! No chores due right now.</div>'}
+      ${chores.length
+        ? chores.map(c => this._renderChoreCard(c, child)).join('')
+        : '<div class="empty"><div class="empty-icon">✅</div>All done! No chores due right now.</div>'}
       ${payBtn}`;
   }
 
@@ -348,7 +350,7 @@ class HapmPanelCard extends HTMLElement {
     return `<div class="chore-card${isOpt ? ' optimistic' : ''}">
       <div>
         <div class="chore-top">
-          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id || c.name || '').charCodeAt(0) || 0) % CHORE_ICONS.length]}</div>
+          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id || c.name || '').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
           <div>
             <div class="chore-name">${esc(c.name)}${isOpt ? ' <span style="font-size:10px;opacity:0.5">(saving…)</span>' : ''}</div>
             ${c.description ? `<div class="chore-desc">${esc(c.description)}</div>` : ''}
@@ -381,22 +383,22 @@ class HapmPanelCard extends HTMLElement {
       </div>`;
   }
 
-  // ── Modals (all inside Shadow DOM) ─────────────────────────────────────────
+  // Modals are rendered OUTSIDE ha-card so position:fixed is not clipped
   _renderModals(child) {
     const childOptions = this._children.map(c => `
       <label class="hapm-child-row">
         <input type="checkbox" value="${esc(c.childEntryId)}"
           ${c.childEntryId === this._activeChildId ? 'checked' : ''}>
-        <span class="hapm-child-dot" style="background:${COLOUR_MAP[c.colour] || COLOUR_MAP.teal}"></span>
+        <span class="hapm-child-dot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
         <span class="name">${esc(c.childName)}</span>
       </label>`).join('');
 
     const payLabel = child
-      ? `Pay ${esc(child.childName)} ${fmtMoney(child.balance, child.currency)}?`
+      ? `Pay <strong>${esc(child.childName)}</strong> ${fmtMoney(child.balance, child.currency)}?`
       : '';
 
     return `
-    <!-- Add Chore modal -->
+    <!-- Add Chore -->
     <div class="hapm-backdrop hidden" id="modal-add">
       <div class="hapm-sheet">
         <div class="hapm-handle"></div>
@@ -435,7 +437,7 @@ class HapmPanelCard extends HTMLElement {
       </div>
     </div>
 
-    <!-- Holiday modal -->
+    <!-- Holiday -->
     <div class="hapm-backdrop hidden" id="modal-holiday">
       <div class="hapm-sheet">
         <div class="hapm-handle"></div>
@@ -450,7 +452,7 @@ class HapmPanelCard extends HTMLElement {
       </div>
     </div>
 
-    <!-- Pay confirm modal -->
+    <!-- Pay confirm -->
     <div class="hapm-backdrop hidden" id="modal-pay">
       <div class="hapm-sheet">
         <div class="hapm-handle"></div>
@@ -464,31 +466,25 @@ class HapmPanelCard extends HTMLElement {
     </div>`;
   }
 
-  // ── Events ─────────────────────────────────────────────────────────────────
+  // ── Events ─────────────────────────────────────────────────────
   _bindEvents() {
     this.shadowRoot.querySelectorAll('[data-action]').forEach(el =>
       el.addEventListener('click', e => this._handleAction(e))
     );
-    // Occurrence field → show/hide window row
-    const occInput = this.shadowRoot.getElementById('m-occ');
+    const occInput = this._sr('m-occ');
     if (occInput) {
       occInput.addEventListener('input', () => {
         const occ = parseInt(occInput.value) || 1;
-        const row = this.shadowRoot.getElementById('m-window-row');
-        const win = this.shadowRoot.getElementById('m-window');
-        row.classList.toggle('visible', occ > 1);
-        if (occ > 1) win.value = occ * 7;
+        const row = this._sr('m-window-row');
+        const win = this._sr('m-window');
+        if (row) row.classList.toggle('visible', occ > 1);
+        if (win && occ > 1) win.value = occ * 7;
       });
     }
   }
 
-  _sr(id) { return this.shadowRoot.getElementById(id); }
-
-  _openModal(id) { this._sr(id)?.classList.remove('hidden'); }
-  _closeModal(id) { this._sr(id)?.classList.add('hidden'); }
-
   _handleAction(e) {
-    const el = e.currentTarget;
+    const el     = e.currentTarget;
     const action = el.dataset.action;
 
     switch (action) {
@@ -511,11 +507,11 @@ class HapmPanelCard extends HTMLElement {
         break;
 
       case 'submit-add': {
-        const name  = this._sr('m-name')?.value.trim();
-        const value = parseFloat(this._sr('m-value')?.value);
-        const recur = this._sr('m-recur')?.value || 'manual';
-        const occ   = parseInt(this._sr('m-occ')?.value) || 1;
-        const winDays = occ > 1 ? (parseInt(this._sr('m-window')?.value) || occ * 7) : null;
+        const name     = this._sr('m-name')?.value.trim();
+        const value    = parseFloat(this._sr('m-value')?.value);
+        const recur    = this._sr('m-recur')?.value || 'manual';
+        const occ      = parseInt(this._sr('m-occ')?.value) || 1;
+        const winDays  = occ > 1 ? (parseInt(this._sr('m-window')?.value) || occ * 7) : null;
         const assigned = [...this.shadowRoot.querySelectorAll('.hapm-children-list input[type=checkbox]:checked')]
           .map(cb => cb.value);
         if (!name || !value || !assigned.length) return;
@@ -586,8 +582,13 @@ class HapmPanelCard extends HTMLElement {
 
       case 'submit-pay': {
         const child = this._activeChild;
+        if (!child) return;
         this._closeModal('modal-pay');
-        if (child) this._callService('mark_paid', { child_entry_id: child.childEntryId });
+        // Optimistically hide the pay button immediately
+        this._optimisticPaid.add(child.childEntryId);
+        this._syncFromHass();
+        this._render();
+        this._callService('mark_paid', { child_entry_id: child.childEntryId });
         break;
       }
     }
