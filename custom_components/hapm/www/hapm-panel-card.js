@@ -1,10 +1,13 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.10
- * Modals use position:fixed to escape overflow:hidden on ha-card.
- * Pay hides optimistically. Holiday modal works.
+ * HAPM Pocket Money Panel Card  v0.1.12
+ *
+ * Architecture:
+ *   _buildDOM()  — called ONCE on first render, creates all DOM nodes incl. modals
+ *   _updateDOM() — called on every subsequent hass() update, patches only changed nodes
+ *   Modals are permanent <div> nodes; shown/hidden with a CSS class, never recreated.
  */
 
-const HAPM_VERSION = '0.1.10';
+const HAPM_VERSION = '0.1.12';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -24,14 +27,16 @@ function fmtDate(iso) {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
 function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function daysRemaining(isoUntil) {
-  const diff = new Date(isoUntil) - new Date();
-  return Math.max(0, Math.ceil(diff / 86400000));
+  return Math.max(0, Math.ceil((new Date(isoUntil) - new Date()) / 86400000));
 }
 
-const BASE_STYLES = `
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const STYLES = `
   :host { display: block; }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -40,146 +45,151 @@ const BASE_STYLES = `
     background: var(--ha-card-background, var(--card-background-color));
     border-radius: var(--ha-card-border-radius, 12px); }
 
-  .topbar { display: flex; align-items: center; justify-content: space-between;
-    padding: 12px 16px; border-bottom: 1px solid var(--divider-color); }
-  .topbar-title { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
-  .btn-holiday { display: flex; align-items: center; gap: 6px; padding: 6px 12px;
-    border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none;
-    font-family: inherit; background: rgba(232,175,52,0.15); color: #c9920a; transition: all 150ms; }
-  .btn-holiday.active { background: #c9920a; color: #fff; }
+  /* topbar */
+  .topbar { display:flex; align-items:center; justify-content:space-between;
+    padding:12px 16px; border-bottom:1px solid var(--divider-color); }
+  .topbar-title { font-weight:700; font-size:15px; display:flex; align-items:center; gap:8px; }
+  .btn-holiday { display:flex; align-items:center; gap:6px; padding:6px 12px;
+    border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; border:none;
+    font-family:inherit; background:rgba(232,175,52,0.15); color:#c9920a; transition:all 150ms; }
+  .btn-holiday.active { background:#c9920a; color:#fff; }
 
-  .child-tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 16px 16px 0; }
-  .child-tab { display: flex; align-items: center; gap: 6px; padding: 6px 14px;
-    border-radius: 9999px; border: 1.5px solid var(--divider-color); cursor: pointer;
-    font-size: 13px; font-weight: 500; background: none; color: var(--primary-text-color);
-    font-family: inherit; transition: all 150ms; }
-  .child-tab:hover { border-color: var(--primary-color); color: var(--primary-color); }
-  .child-tab.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
-  .dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
+  /* child tabs */
+  .child-tabs { display:flex; gap:8px; flex-wrap:wrap; padding:16px 16px 0; }
+  .child-tab { display:flex; align-items:center; gap:6px; padding:6px 14px;
+    border-radius:9999px; border:1.5px solid var(--divider-color); cursor:pointer;
+    font-size:13px; font-weight:500; background:none; color:var(--primary-text-color);
+    font-family:inherit; transition:all 150ms; }
+  .child-tab:hover { border-color:var(--primary-color); color:var(--primary-color); }
+  .child-tab.active { background:var(--primary-color); border-color:var(--primary-color); color:#fff; }
+  .dot { width:9px; height:9px; border-radius:9999px; flex-shrink:0; }
 
-  .kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-    gap: 12px; padding: 14px 16px; }
-  .kpi { background: var(--secondary-background-color); border-radius: 10px; padding: 12px 14px; }
-  .kpi-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--secondary-text-color); margin-bottom: 4px; }
-  .kpi-value { font-size: 22px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
-  .kpi-value.positive { color: var(--success-color, #6daa45); }
-  .kpi-sub { font-size: 11px; color: var(--secondary-text-color); margin-top: 3px; }
+  /* kpis */
+  .kpi-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr));
+    gap:12px; padding:14px 16px; }
+  .kpi { background:var(--secondary-background-color); border-radius:10px; padding:12px 14px; }
+  .kpi-label { font-size:11px; font-weight:600; text-transform:uppercase;
+    letter-spacing:0.06em; color:var(--secondary-text-color); margin-bottom:4px; }
+  .kpi-value { font-size:22px; font-weight:700; line-height:1; font-variant-numeric:tabular-nums; }
+  .kpi-value.positive { color:var(--success-color,#6daa45); }
+  .kpi-sub { font-size:11px; color:var(--secondary-text-color); margin-top:3px; }
 
-  .nav { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid var(--divider-color); }
-  .nav-btn { padding: 10px 14px; font-size: 13px; font-weight: 500; background: none; border: none;
-    border-bottom: 2px solid transparent; color: var(--secondary-text-color); cursor: pointer;
-    font-family: inherit; transition: all 150ms; margin-bottom: -1px; }
-  .nav-btn:hover { color: var(--primary-text-color); }
-  .nav-btn.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
-  .badge { display: inline-flex; align-items: center; justify-content: center;
-    background: var(--primary-color); color: #fff; border-radius: 9999px;
-    font-size: 10px; font-weight: 700; padding: 1px 6px; margin-left: 4px; }
+  /* nav */
+  .nav { display:flex; gap:4px; padding:0 16px; border-bottom:1px solid var(--divider-color); }
+  .nav-btn { padding:10px 14px; font-size:13px; font-weight:500; background:none; border:none;
+    border-bottom:2px solid transparent; color:var(--secondary-text-color); cursor:pointer;
+    font-family:inherit; transition:all 150ms; margin-bottom:-1px; }
+  .nav-btn:hover { color:var(--primary-text-color); }
+  .nav-btn.active { color:var(--primary-color); border-bottom-color:var(--primary-color); }
+  .badge { display:inline-flex; align-items:center; justify-content:center;
+    background:var(--primary-color); color:#fff; border-radius:9999px;
+    font-size:10px; font-weight:700; padding:1px 6px; margin-left:4px; }
 
-  .panel { padding: 14px 16px; }
-  .chore-card { background: var(--secondary-background-color); border-radius: 10px;
-    padding: 12px 14px; margin-bottom: 10px; display: grid;
-    grid-template-columns: 1fr auto; gap: 8px; align-items: start; transition: opacity 300ms; }
-  .chore-card.completing { opacity: 0.35; pointer-events: none; }
-  .chore-card.optimistic { opacity: 0.6; }
-  .chore-top { display: flex; align-items: flex-start; gap: 10px; }
-  .chore-icon { width: 34px; height: 34px; border-radius: 8px; display: flex;
-    align-items: center; justify-content: center; font-size: 18px;
-    background: var(--card-background-color, #fff); flex-shrink: 0; }
-  .chore-name { font-weight: 600; font-size: 13px; line-height: 1.3; }
-  .chore-desc { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; }
-  .chore-meta { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
-  .pill { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 9999px;
-    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
-  .pill-due { background: rgba(109,170,69,0.15); color: var(--success-color,#6daa45); }
-  .pill-multi { background: rgba(124,99,209,0.15); color: #7c63d1; }
-  .pill-recur { background: rgba(85,145,199,0.15); color: #5591c7; }
-  .occ-track { display: flex; gap: 4px; margin-top: 6px; }
-  .occ-dot { width: 9px; height: 9px; border-radius: 9999px;
-    background: var(--divider-color); border: 1.5px solid var(--secondary-text-color); }
-  .chore-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-  .chore-value { font-weight: 700; font-size: 15px; color: var(--success-color, #6daa45);
-    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* panel / chores */
+  .panel { padding:14px 16px; }
+  .chore-card { background:var(--secondary-background-color); border-radius:10px;
+    padding:12px 14px; margin-bottom:10px; display:grid;
+    grid-template-columns:1fr auto; gap:8px; align-items:start; transition:opacity 300ms; }
+  .chore-card.completing { opacity:0.35; pointer-events:none; }
+  .chore-card.optimistic { opacity:0.6; }
+  .chore-top { display:flex; align-items:flex-start; gap:10px; }
+  .chore-icon { width:34px; height:34px; border-radius:8px; display:flex;
+    align-items:center; justify-content:center; font-size:18px;
+    background:var(--card-background-color,#fff); flex-shrink:0; }
+  .chore-name { font-weight:600; font-size:13px; line-height:1.3; }
+  .chore-desc { font-size:12px; color:var(--secondary-text-color); margin-top:2px; }
+  .chore-meta { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
+  .pill { display:inline-flex; align-items:center; padding:2px 7px; border-radius:9999px;
+    font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
+  .pill-due  { background:rgba(109,170,69,0.15); color:var(--success-color,#6daa45); }
+  .pill-multi{ background:rgba(124,99,209,0.15); color:#7c63d1; }
+  .pill-recur{ background:rgba(85,145,199,0.15); color:#5591c7; }
+  .occ-track { display:flex; gap:4px; margin-top:6px; }
+  .occ-dot { width:9px; height:9px; border-radius:9999px;
+    background:var(--divider-color); border:1.5px solid var(--secondary-text-color); }
+  .chore-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .chore-value { font-weight:700; font-size:15px; color:var(--success-color,#6daa45);
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
 
-  .btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px;
-    border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none;
-    font-family: inherit; transition: all 150ms; }
-  .btn-primary { background: var(--primary-color); color: #fff; }
-  .btn-primary:hover { filter: brightness(1.1); }
-  .btn-ghost { background: transparent; border: 1.5px solid var(--divider-color);
-    color: var(--secondary-text-color); }
-  .btn-ghost:hover { border-color: var(--primary-color); color: var(--primary-color); }
-  .btn-pay { width: 100%; padding: 10px; font-size: 14px; margin-top: 8px;
-    background: var(--success-color, #6daa45); color: #fff; border: none;
-    border-radius: 10px; font-family: inherit; font-weight: 700; cursor: pointer; }
+  /* buttons */
+  .btn { display:inline-flex; align-items:center; gap:5px; padding:5px 12px;
+    border-radius:8px; font-size:12px; font-weight:600; cursor:pointer; border:none;
+    font-family:inherit; transition:all 150ms; }
+  .btn-primary { background:var(--primary-color); color:#fff; }
+  .btn-primary:hover { filter:brightness(1.1); }
+  .btn-ghost { background:transparent; border:1.5px solid var(--divider-color);
+    color:var(--secondary-text-color); }
+  .btn-ghost:hover { border-color:var(--primary-color); color:var(--primary-color); }
+  .btn-pay { width:100%; padding:10px; font-size:14px; margin-top:8px;
+    background:var(--success-color,#6daa45); color:#fff; border:none;
+    border-radius:10px; font-family:inherit; font-weight:700; cursor:pointer; }
 
-  .empty { text-align: center; padding: 32px 16px; color: var(--secondary-text-color); font-size: 13px; }
-  .empty-icon { font-size: 32px; margin-bottom: 8px; }
+  /* empty */
+  .empty { text-align:center; padding:32px 16px;
+    color:var(--secondary-text-color); font-size:13px; }
+  .empty-icon { font-size:32px; margin-bottom:8px; }
 
-  /* ══ MODAL SYSTEM — position:fixed so it escapes overflow:hidden on ha-card ══ */
-  .hapm-backdrop {
-    position: fixed; inset: 0; z-index: 9999;
-    background: rgba(0,0,0,0.52);
-    display: flex; align-items: flex-end; justify-content: center;
-    padding-bottom: env(safe-area-inset-bottom, 0px); }
-  .hapm-backdrop.hidden { display: none; }
-  .hapm-sheet {
-    background: var(--card-background-color, #1c1c1e);
-    color: var(--primary-text-color);
-    width: 100%; max-width: 520px;
-    border-radius: 20px 20px 0 0;
-    padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px));
-    box-shadow: 0 -4px 32px rgba(0,0,0,0.28);
-    max-height: 85vh; overflow-y: auto; }
-  .hapm-handle { width: 36px; height: 4px; border-radius: 2px;
-    background: var(--divider-color, #555); margin: 0 auto 16px; }
-  .hapm-sheet-title { font-weight: 700; font-size: 17px; margin-bottom: 16px; }
-  .hapm-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--secondary-text-color); margin-bottom: 6px; display: block; }
-  .hapm-input, .hapm-select {
-    width: 100%; padding: 10px 12px; font-size: 16px;
-    border: 1.5px solid var(--divider-color, #555); border-radius: 10px;
-    font-family: inherit; background: var(--secondary-background-color, #2c2c2e);
-    color: var(--primary-text-color); margin-bottom: 12px;
-    -webkit-appearance: none; appearance: none; }
-  .hapm-input:focus, .hapm-select:focus { outline: none; border-color: #01696f; }
-  .hapm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
-  .hapm-row .hapm-input, .hapm-row .hapm-select { margin-bottom: 0; }
-  .hapm-children-list { display: flex; flex-direction: column;
-    border: 1.5px solid var(--divider-color, #555); border-radius: 10px;
-    overflow: hidden; margin-bottom: 12px; }
-  .hapm-child-row { display: flex; align-items: center; gap: 10px;
-    padding: 11px 14px; cursor: pointer;
-    border-bottom: 1px solid var(--divider-color, #444); }
-  .hapm-child-row:last-child { border-bottom: none; }
-  .hapm-child-row input[type=checkbox] { width: 18px; height: 18px;
-    accent-color: #01696f; flex-shrink: 0; cursor: pointer; margin: 0; }
-  .hapm-child-row .name { font-size: 15px; font-weight: 500; flex: 1; }
-  .hapm-child-dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
-  .hapm-actions { display: flex; gap: 10px; margin-top: 4px; }
-  .hapm-btn { flex: 1; padding: 13px; border-radius: 12px; font-size: 15px;
-    font-weight: 700; cursor: pointer; border: none; font-family: inherit; }
-  .hapm-btn-cancel { background: var(--secondary-background-color, #3a3a3c); color: var(--primary-text-color); }
-  .hapm-btn-ok { background: #01696f; color: #fff; }
-  .hapm-window-row { display: none; margin-bottom: 12px; }
-  .hapm-window-row.visible { display: block; }
-  .hapm-confirm-msg { font-size: 15px; line-height: 1.5; margin-bottom: 20px; text-align: center;
-    color: var(--primary-text-color); }
+  /* ── Modals ── position:fixed escapes any parent overflow/clip ── */
+  .hapm-backdrop { position:fixed; inset:0; z-index:9999;
+    background:rgba(0,0,0,0.52); display:flex; align-items:flex-end;
+    justify-content:center; padding-bottom:env(safe-area-inset-bottom,0px);
+    transition:opacity 150ms; }
+  .hapm-backdrop.hidden { display:none; }
+  .hapm-sheet { background:var(--card-background-color,#1c1c1e);
+    color:var(--primary-text-color); width:100%; max-width:520px;
+    border-radius:20px 20px 0 0;
+    padding:20px 20px calc(20px + env(safe-area-inset-bottom,0px));
+    box-shadow:0 -4px 32px rgba(0,0,0,0.28); max-height:85vh; overflow-y:auto; }
+  .hapm-handle { width:36px; height:4px; border-radius:2px;
+    background:var(--divider-color,#555); margin:0 auto 16px; }
+  .hapm-title { font-weight:700; font-size:17px; margin-bottom:16px; }
+  .hapm-label { font-size:11px; font-weight:600; text-transform:uppercase;
+    letter-spacing:0.06em; color:var(--secondary-text-color);
+    margin-bottom:6px; display:block; }
+  .hapm-input, .hapm-select { width:100%; padding:10px 12px; font-size:16px;
+    border:1.5px solid var(--divider-color,#555); border-radius:10px;
+    font-family:inherit; background:var(--secondary-background-color,#2c2c2e);
+    color:var(--primary-text-color); margin-bottom:12px;
+    -webkit-appearance:none; appearance:none; }
+  .hapm-input:focus,.hapm-select:focus { outline:none; border-color:#01696f; }
+  .hapm-2col { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }
+  .hapm-2col .hapm-input, .hapm-2col .hapm-select { margin-bottom:0; }
+  .hapm-children-list { display:flex; flex-direction:column;
+    border:1.5px solid var(--divider-color,#555); border-radius:10px;
+    overflow:hidden; margin-bottom:12px; }
+  .hapm-child-row { display:flex; align-items:center; gap:10px; padding:11px 14px;
+    cursor:pointer; border-bottom:1px solid var(--divider-color,#444); }
+  .hapm-child-row:last-child { border-bottom:none; }
+  .hapm-child-row input[type=checkbox] { width:18px; height:18px;
+    accent-color:#01696f; flex-shrink:0; cursor:pointer; margin:0; }
+  .hapm-child-row .cname { font-size:15px; font-weight:500; flex:1; }
+  .hapm-cdot { width:9px; height:9px; border-radius:9999px; flex-shrink:0; }
+  .hapm-actions { display:flex; gap:10px; margin-top:4px; }
+  .hapm-btn { flex:1; padding:13px; border-radius:12px; font-size:15px;
+    font-weight:700; cursor:pointer; border:none; font-family:inherit; }
+  .hapm-btn-cancel { background:var(--secondary-background-color,#3a3a3c);
+    color:var(--primary-text-color); }
+  .hapm-btn-ok     { background:#01696f; color:#fff; }
+  .hapm-window-row { display:none; margin-bottom:12px; }
+  .hapm-window-row.visible { display:block; }
+  .hapm-confirm-msg { font-size:15px; line-height:1.5; margin-bottom:20px;
+    text-align:center; color:var(--primary-text-color); }
 `;
 
+// ─── Custom Element ───────────────────────────────────────────────────────────
 class HapmPanelCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._config = {};
-    this._hass = null;
-    this._activeChildId = null;
-    this._view = 'chores';
-    this._holidayUntil = null;
-    this._children = [];
+    this._config         = {};
+    this._hass           = null;
+    this._activeChildId  = null;
+    this._view           = 'chores';
+    this._holidayUntil   = null;
+    this._children       = [];
     this._optimisticChores = {};
-    // Optimistic pay: set of childEntryIds we've just paid (hides button until sensor updates)
-    this._optimisticPaid = new Set();
+    this._optimisticPaid   = new Set();
+    this._domBuilt       = false;
   }
 
   setConfig(config) { this._config = config; }
@@ -187,15 +197,21 @@ class HapmPanelCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._syncFromHass();
-    this._render();
+    if (!this._domBuilt) {
+      this._buildDOM();
+      this._domBuilt = true;
+    } else {
+      this._updateDOM();
+    }
   }
 
+  // ── Data sync ────────────────────────────────────────────────────────────────
   _syncFromHass() {
     if (!this._hass) return;
-    const now = Date.now();
+    const now    = Date.now();
     const states = this._hass.states;
 
-    // Clean up optimistic chores
+    // Age out optimistic chores
     for (const childId of Object.keys(this._optimisticChores)) {
       const dueSensorId = Object.keys(states).find(id =>
         id.startsWith('sensor.') && id.endsWith('_chores_due') &&
@@ -209,25 +225,22 @@ class HapmPanelCard extends HTMLElement {
       else delete this._optimisticChores[childId];
     }
 
-    // Build children
     const children = [];
     for (const [entityId, state] of Object.entries(states)) {
       if (!entityId.startsWith('sensor.') || !entityId.endsWith('_pocket_money_balance')) continue;
       const attrs        = state.attributes || {};
-      const childEntryId = attrs.entry_id || entityId;
+      const childEntryId = attrs.entry_id   || entityId;
       const childName    = attrs.child_name || entityId.replace('sensor.','').replace('_pocket_money_balance','');
       const colour       = attrs.avatar_colour || 'teal';
-      const currency     = attrs.currency || CURRENCY_DEFAULT;
+      const currency     = attrs.currency      || CURRENCY_DEFAULT;
       const rawBalance   = parseFloat(state.state) || 0;
-      const dueSensorId  = entityId.replace('_pocket_money_balance', '_chores_due');
+      const dueSensorId  = entityId.replace('_pocket_money_balance','_chores_due');
       const serverChores = states[dueSensorId]?.attributes?.due_chores || [];
       const lastPaid     = attrs.last_paid || null;
       const optimistic   = this._optimisticChores[childEntryId] || [];
 
-      // If sensor balance has reached zero, clear the optimistic paid flag
+      // Clear optimistic-paid flag once the sensor genuinely reaches zero
       if (rawBalance <= 0) this._optimisticPaid.delete(childEntryId);
-
-      // Show balance as 0 optimistically if we just paid
       const balance = this._optimisticPaid.has(childEntryId) ? 0 : rawBalance;
 
       children.push({ childEntryId, childName, colour, currency, balance,
@@ -241,116 +254,240 @@ class HapmPanelCard extends HTMLElement {
     }
   }
 
+  get _activeChild() {
+    return this._children.find(c => c.childEntryId === this._activeChildId) || this._children[0];
+  }
+
   async _callService(service, data) {
     if (!this._hass) return;
     try { await this._hass.callService('hapm', service, data); }
     catch (e) { console.error('HAPM service error', service, e); }
   }
 
-  get _activeChild() {
-    return this._children.find(c => c.childEntryId === this._activeChildId) || this._children[0];
-  }
+  // ── Build DOM (called ONCE) ───────────────────────────────────────────────────
+  _buildDOM() {
+    const sr = this.shadowRoot;
+    sr.innerHTML = '';
 
-  _sr(id) { return this.shadowRoot.getElementById(id); }
-  _openModal(id)  { const el = this._sr(id); if (el) el.classList.remove('hidden'); }
-  _closeModal(id) { const el = this._sr(id); if (el) el.classList.add('hidden'); }
+    // Styles
+    const style = document.createElement('style');
+    style.textContent = STYLES;
+    sr.appendChild(style);
 
-  // ── Render ─────────────────────────────────────────────────────
-  _render() {
-    const child = this._activeChild;
-    this.shadowRoot.innerHTML = `
-      <style>${BASE_STYLES}</style>
-      <ha-card class="hapm">
-        ${this._renderTopbar()}
-        ${this._renderChildTabs()}
-        ${this._renderKPIs(child)}
-        ${this._renderNav(child)}
-        <div class="panel">
-          ${this._view === 'chores' ? this._renderChores(child) : this._renderLedger()}
+    // Card shell
+    const card = document.createElement('ha-card');
+    card.className = 'hapm';
+    sr.appendChild(card);
+
+    // Topbar
+    card.insertAdjacentHTML('beforeend', `
+      <div class="topbar">
+        <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
+        <button class="btn-holiday" id="btn-holiday">🏖 Holiday Mode</button>
+      </div>`);
+
+    // Child tabs container
+    card.insertAdjacentHTML('beforeend', '<div class="child-tabs" id="child-tabs"></div>');
+
+    // KPI row
+    card.insertAdjacentHTML('beforeend', `
+      <div class="kpi-row">
+        <div class="kpi"><div class="kpi-label">Balance</div>
+          <div class="kpi-value" id="kpi-balance">£0.00</div>
+          <div class="kpi-sub">Outstanding</div></div>
+        <div class="kpi"><div class="kpi-label">Due Now</div>
+          <div class="kpi-value" id="kpi-due">0</div>
+          <div class="kpi-sub" id="kpi-due-sub">chores</div></div>
+        <div class="kpi"><div class="kpi-label">Last Paid</div>
+          <div class="kpi-value" id="kpi-lastpaid" style="font-size:14px">—</div>
+          <div class="kpi-sub">&nbsp;</div></div>
+      </div>`);
+
+    // Nav
+    card.insertAdjacentHTML('beforeend', `
+      <div class="nav">
+        <button class="nav-btn active" id="nav-chores" data-view="chores">
+          Chores<span class="badge" id="nav-badge" style="display:none"></span>
+        </button>
+        <button class="nav-btn" id="nav-ledger" data-view="ledger">Ledger</button>
+      </div>`);
+
+    // Panel
+    card.insertAdjacentHTML('beforeend', '<div class="panel" id="panel"></div>');
+
+    // ── Modals (mounted once, outside ha-card so position:fixed works) ──────────
+    sr.insertAdjacentHTML('beforeend', `
+      <div class="hapm-backdrop hidden" id="modal-add">
+        <div class="hapm-sheet">
+          <div class="hapm-handle"></div>
+          <div class="hapm-title">➕ Add Chore</div>
+          <label class="hapm-label">Chore Name</label>
+          <input class="hapm-input" id="m-name" type="text" placeholder="e.g. Tidy bedroom"
+            autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <div class="hapm-2col">
+            <div>
+              <label class="hapm-label">Value (£)</label>
+              <input class="hapm-input" id="m-value" type="number"
+                inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
+            </div>
+            <div>
+              <label class="hapm-label">Recurrence</label>
+              <select class="hapm-select" id="m-recur">
+                <option value="manual">Manual</option>
+                <option value="daily">Daily</option>
+                <option value="weekly" selected>Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+          </div>
+          <label class="hapm-label">Occurrences needed</label>
+          <input class="hapm-input" id="m-occ" type="number" inputmode="numeric" min="1" value="1">
+          <div class="hapm-window-row" id="m-window-row">
+            <label class="hapm-label">Completion window (days)</label>
+            <input class="hapm-input" id="m-window" type="number" inputmode="numeric" min="1" placeholder="e.g. 7">
+          </div>
+          <label class="hapm-label">Assign To</label>
+          <div class="hapm-children-list" id="m-children"></div>
+          <div class="hapm-actions">
+            <button class="hapm-btn hapm-btn-cancel" id="m-add-cancel">Cancel</button>
+            <button class="hapm-btn hapm-btn-ok"     id="m-add-submit">Add Chore</button>
+          </div>
         </div>
-      </ha-card>
-      ${this._renderModals(child)}`;
+      </div>
+
+      <div class="hapm-backdrop hidden" id="modal-holiday">
+        <div class="hapm-sheet">
+          <div class="hapm-handle"></div>
+          <div class="hapm-title">🏖 Holiday Mode</div>
+          <label class="hapm-label">How many days are you away?</label>
+          <input class="hapm-input" id="m-holiday-days" type="number"
+            inputmode="numeric" min="1" max="365" value="7">
+          <div class="hapm-actions">
+            <button class="hapm-btn hapm-btn-cancel" id="m-holiday-cancel">Cancel</button>
+            <button class="hapm-btn hapm-btn-ok"     id="m-holiday-submit">Start Holiday</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="hapm-backdrop hidden" id="modal-pay">
+        <div class="hapm-sheet">
+          <div class="hapm-handle"></div>
+          <div class="hapm-title">💸 Confirm Payment</div>
+          <div class="hapm-confirm-msg" id="m-pay-msg"></div>
+          <div class="hapm-actions">
+            <button class="hapm-btn hapm-btn-cancel" id="m-pay-cancel">Cancel</button>
+            <button class="hapm-btn hapm-btn-ok"     id="m-pay-submit">Confirm Pay</button>
+          </div>
+        </div>
+      </div>`);
+
+    // Bind all events ONCE here
     this._bindEvents();
+
+    // Fill in initial data
+    this._updateDOM();
   }
 
-  _renderTopbar() {
-    const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
-    const label  = active
-      ? `🏖 Holiday — ${daysRemaining(this._holidayUntil)}d left`
-      : '🏖 Holiday Mode';
-    return `<div class="topbar">
-      <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
-      <button class="btn-holiday${active ? ' active' : ''}" data-action="toggle-holiday">${label}</button>
-    </div>`;
+  // ── Update DOM (called on every hass update) ─────────────────────────────────
+  _updateDOM() {
+    const sr    = this.shadowRoot;
+    const child = this._activeChild;
+
+    // ── Holiday button ──
+    const btnHoliday = sr.getElementById('btn-holiday');
+    if (btnHoliday) {
+      const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
+      btnHoliday.textContent = active
+        ? `🏖 Holiday — ${daysRemaining(this._holidayUntil)}d left`
+        : '🏖 Holiday Mode';
+      btnHoliday.classList.toggle('active', !!active);
+    }
+
+    // ── Child tabs ──
+    const tabsEl = sr.getElementById('child-tabs');
+    if (tabsEl) {
+      tabsEl.innerHTML = this._children.map(c => `
+        <button class="child-tab${c.childEntryId === this._activeChildId ? ' active' : ''}"
+          data-action="set-child" data-child="${esc(c.childEntryId)}">
+          <span class="dot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
+          ${esc(c.childName)}
+          <span style="opacity:0.75;font-size:11px">${fmtMoney(Math.max(0,c.balance),c.currency)}</span>
+        </button>`).join('');
+      tabsEl.querySelectorAll('[data-action]').forEach(el =>
+        el.addEventListener('click', e => this._handleAction(e)));
+    }
+
+    // ── KPIs ──
+    if (child) {
+      const balEl = sr.getElementById('kpi-balance');
+      if (balEl) {
+        balEl.textContent = fmtMoney(child.balance, child.currency);
+        balEl.className = 'kpi-value' + (child.balance > 0 ? ' positive' : '');
+      }
+      const n = (child.dueChores || []).length;
+      const dueEl = sr.getElementById('kpi-due');
+      if (dueEl) dueEl.textContent = n;
+      const dueSubEl = sr.getElementById('kpi-due-sub');
+      if (dueSubEl) dueSubEl.textContent = 'chore' + (n !== 1 ? 's' : '');
+      const lpEl = sr.getElementById('kpi-lastpaid');
+      if (lpEl) lpEl.textContent = child.lastPaid ? fmtDate(child.lastPaid) : '—';
+
+      // Badge
+      const badge = sr.getElementById('nav-badge');
+      if (badge) {
+        badge.textContent = n;
+        badge.style.display = n ? '' : 'none';
+      }
+    }
+
+    // ── Nav active state ──
+    sr.getElementById('nav-chores')?.classList.toggle('active', this._view === 'chores');
+    sr.getElementById('nav-ledger')?.classList.toggle('active', this._view === 'ledger');
+
+    // ── Panel content ──
+    const panel = sr.getElementById('panel');
+    if (panel) {
+      if (this._view === 'chores') {
+        panel.innerHTML = this._choresPanelHTML(child);
+        panel.querySelectorAll('[data-action]').forEach(el =>
+          el.addEventListener('click', e => this._handleAction(e)));
+      } else {
+        panel.innerHTML = `
+          <div style="margin-bottom:10px"><strong style="font-size:13px">Payment Ledger</strong></div>
+          <div class="empty" style="padding:16px"><div class="empty-icon">📒</div>
+            Full ledger in sensor attribute:<br><br>
+            <code style="font-size:11px;background:var(--secondary-background-color);padding:4px 8px;border-radius:6px">
+              sensor.&lt;child&gt;_pocket_money_balance → ledger
+            </code>
+          </div>`;
+      }
+    }
   }
 
-  _renderChildTabs() {
-    if (!this._children.length) return '';
-    return `<div class="child-tabs">${this._children.map(c => `
-      <button class="child-tab${c.childEntryId === this._activeChildId ? ' active' : ''}"
-        data-action="set-child" data-child="${esc(c.childEntryId)}">
-        <span class="dot" style="background:${COLOUR_MAP[c.colour] || COLOUR_MAP.teal}"></span>
-        ${esc(c.childName)}
-        <span style="opacity:0.75;font-size:11px">${fmtMoney(Math.max(0, c.balance), c.currency)}</span>
-      </button>`).join('')}</div>`;
-  }
-
-  _renderKPIs(child) {
-    if (!child) return '';
-    const n = (child.dueChores || []).length;
-    return `<div class="kpi-row">
-      <div class="kpi">
-        <div class="kpi-label">Balance</div>
-        <div class="kpi-value${child.balance > 0 ? ' positive' : ''}">${fmtMoney(child.balance, child.currency)}</div>
-        <div class="kpi-sub">Outstanding</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Due Now</div>
-        <div class="kpi-value">${n}</div>
-        <div class="kpi-sub">chore${n !== 1 ? 's' : ''}</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Last Paid</div>
-        <div class="kpi-value" style="font-size:14px">${child.lastPaid ? fmtDate(child.lastPaid) : '—'}</div>
-        <div class="kpi-sub">&nbsp;</div>
-      </div>
-    </div>`;
-  }
-
-  _renderNav(child) {
-    const n = child ? (child.dueChores || []).length : 0;
-    return `<div class="nav">
-      <button class="nav-btn${this._view === 'chores' ? ' active' : ''}" data-action="nav" data-view="chores">
-        Chores${n ? `<span class="badge">${n}</span>` : ''}
-      </button>
-      <button class="nav-btn${this._view === 'ledger' ? ' active' : ''}" data-action="nav" data-view="ledger">Ledger</button>
-    </div>`;
-  }
-
-  _renderChores(child) {
+  _choresPanelHTML(child) {
     if (!child) return `<div class="empty"><div class="empty-icon">👶</div>No children configured.<br>Add a child in Settings → Integrations → HAPM.</div>`;
     const chores = child.dueChores || [];
     const payBtn = child.balance > 0
       ? `<button class="btn-pay" data-action="open-pay">💸 Pay ${esc(child.childName)} — ${fmtMoney(child.balance, child.currency)}</button>`
       : '';
+    const choreHTML = chores.length
+      ? chores.map(c => this._choreCardHTML(c, child)).join('')
+      : '<div class="empty"><div class="empty-icon">✅</div>All done! No chores due right now.</div>';
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <strong style="font-size:13px">Due Chores</strong>
         <button class="btn btn-ghost" data-action="open-add-form">+ Add Chore</button>
       </div>
-      ${chores.length
-        ? chores.map(c => this._renderChoreCard(c, child)).join('')
-        : '<div class="empty"><div class="empty-icon">✅</div>All done! No chores due right now.</div>'}
-      ${payBtn}`;
+      ${choreHTML}${payBtn}`;
   }
 
-  _renderChoreCard(c, child) {
+  _choreCardHTML(c, child) {
     const isMulti = c.occurrences_required > 1;
     const isOpt   = !!c._optimistic;
     return `<div class="chore-card${isOpt ? ' optimistic' : ''}">
       <div>
         <div class="chore-top">
-          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id || c.name || '').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
+          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
           <div>
             <div class="chore-name">${esc(c.name)}${isOpt ? ' <span style="font-size:10px;opacity:0.5">(saving…)</span>' : ''}</div>
             ${c.description ? `<div class="chore-desc">${esc(c.description)}</div>` : ''}
@@ -373,167 +510,131 @@ class HapmPanelCard extends HTMLElement {
     </div>`;
   }
 
-  _renderLedger() {
-    return `<div style="margin-bottom:10px"><strong style="font-size:13px">Payment Ledger</strong></div>
-      <div class="empty" style="padding:16px"><div class="empty-icon">📒</div>
-        Full ledger available as sensor attribute:<br><br>
-        <code style="font-size:11px;background:var(--secondary-background-color);padding:4px 8px;border-radius:6px">
-          sensor.&lt;child&gt;_pocket_money_balance → attribute: ledger
-        </code>
-      </div>`;
-  }
-
-  // Modals are rendered OUTSIDE ha-card so position:fixed is not clipped
-  _renderModals(child) {
-    const childOptions = this._children.map(c => `
-      <label class="hapm-child-row">
-        <input type="checkbox" value="${esc(c.childEntryId)}"
-          ${c.childEntryId === this._activeChildId ? 'checked' : ''}>
-        <span class="hapm-child-dot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
-        <span class="name">${esc(c.childName)}</span>
-      </label>`).join('');
-
-    const payLabel = child
-      ? `Pay <strong>${esc(child.childName)}</strong> ${fmtMoney(child.balance, child.currency)}?`
-      : '';
-
-    return `
-    <!-- Add Chore -->
-    <div class="hapm-backdrop hidden" id="modal-add">
-      <div class="hapm-sheet">
-        <div class="hapm-handle"></div>
-        <div class="hapm-sheet-title">➕ Add Chore</div>
-        <label class="hapm-label">Chore Name</label>
-        <input class="hapm-input" id="m-name" type="text" placeholder="e.g. Tidy bedroom"
-          autocomplete="off" autocorrect="off" autocapitalize="sentences">
-        <div class="hapm-row">
-          <div>
-            <label class="hapm-label">Value (£)</label>
-            <input class="hapm-input" id="m-value" type="number"
-              inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
-          </div>
-          <div>
-            <label class="hapm-label">Recurrence</label>
-            <select class="hapm-select" id="m-recur">
-              <option value="manual">Manual</option>
-              <option value="daily">Daily</option>
-              <option value="weekly" selected>Weekly</option>
-              <option value="monthly">Monthly</option>
-            </select>
-          </div>
-        </div>
-        <label class="hapm-label">Occurrences needed</label>
-        <input class="hapm-input" id="m-occ" type="number" inputmode="numeric" min="1" value="1">
-        <div class="hapm-window-row" id="m-window-row">
-          <label class="hapm-label">Completion window (days)</label>
-          <input class="hapm-input" id="m-window" type="number" inputmode="numeric" min="1" placeholder="e.g. 7">
-        </div>
-        <label class="hapm-label">Assign To</label>
-        <div class="hapm-children-list">${childOptions}</div>
-        <div class="hapm-actions">
-          <button class="hapm-btn hapm-btn-cancel" data-action="modal-cancel" data-modal="modal-add">Cancel</button>
-          <button class="hapm-btn hapm-btn-ok" data-action="submit-add">Add Chore</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Holiday -->
-    <div class="hapm-backdrop hidden" id="modal-holiday">
-      <div class="hapm-sheet">
-        <div class="hapm-handle"></div>
-        <div class="hapm-sheet-title">🏖 Holiday Mode</div>
-        <label class="hapm-label">How many days are you away?</label>
-        <input class="hapm-input" id="m-holiday-days" type="number"
-          inputmode="numeric" min="1" max="365" value="7">
-        <div class="hapm-actions">
-          <button class="hapm-btn hapm-btn-cancel" data-action="modal-cancel" data-modal="modal-holiday">Cancel</button>
-          <button class="hapm-btn hapm-btn-ok" data-action="submit-holiday">Start Holiday</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Pay confirm -->
-    <div class="hapm-backdrop hidden" id="modal-pay">
-      <div class="hapm-sheet">
-        <div class="hapm-handle"></div>
-        <div class="hapm-sheet-title">💸 Confirm Payment</div>
-        <div class="hapm-confirm-msg">${payLabel}</div>
-        <div class="hapm-actions">
-          <button class="hapm-btn hapm-btn-cancel" data-action="modal-cancel" data-modal="modal-pay">Cancel</button>
-          <button class="hapm-btn hapm-btn-ok" data-action="submit-pay">Confirm Pay</button>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  // ── Events ─────────────────────────────────────────────────────
+  // ── Bind events (called ONCE after _buildDOM) ─────────────────────────────────
   _bindEvents() {
-    this.shadowRoot.querySelectorAll('[data-action]').forEach(el =>
-      el.addEventListener('click', e => this._handleAction(e))
-    );
-    const occInput = this._sr('m-occ');
-    if (occInput) {
-      occInput.addEventListener('input', () => {
-        const occ = parseInt(occInput.value) || 1;
-        const row = this._sr('m-window-row');
-        const win = this._sr('m-window');
-        if (row) row.classList.toggle('visible', occ > 1);
-        if (win && occ > 1) win.value = occ * 7;
+    const sr = this.shadowRoot;
+
+    // Nav buttons
+    sr.getElementById('nav-chores')?.addEventListener('click', () => { this._view = 'chores'; this._updateDOM(); });
+    sr.getElementById('nav-ledger')?.addEventListener('click', () => { this._view = 'ledger'; this._updateDOM(); });
+
+    // Holiday button
+    sr.getElementById('btn-holiday')?.addEventListener('click', () => {
+      const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
+      if (active) {
+        this._holidayUntil = null;
+        this._callService('clear_holiday_mode', {});
+        this._updateDOM();
+      } else {
+        sr.getElementById('m-holiday-days').value = '7';
+        this._openModal('modal-holiday');
+        setTimeout(() => sr.getElementById('m-holiday-days')?.focus(), 80);
+      }
+    });
+
+    // ── Add chore modal ──
+    sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
+    sr.getElementById('m-occ')?.addEventListener('input', () => {
+      const occ = parseInt(sr.getElementById('m-occ').value) || 1;
+      sr.getElementById('m-window-row').classList.toggle('visible', occ > 1);
+      if (occ > 1) sr.getElementById('m-window').value = occ * 7;
+    });
+    sr.getElementById('m-add-submit')?.addEventListener('click', () => {
+      const name    = sr.getElementById('m-name').value.trim();
+      const value   = parseFloat(sr.getElementById('m-value').value);
+      const recur   = sr.getElementById('m-recur').value || 'manual';
+      const occ     = parseInt(sr.getElementById('m-occ').value) || 1;
+      const winDays = occ > 1 ? (parseInt(sr.getElementById('m-window').value) || occ * 7) : null;
+      const assigned = [...sr.querySelectorAll('#m-children input[type=checkbox]:checked')]
+        .map(cb => cb.value);
+      if (!name || !value || !assigned.length) {
+        if (!name) sr.getElementById('m-name').focus();
+        return;
+      }
+      this._closeModal('modal-add');
+      const expiresAt = Date.now() + OPTIMISTIC_TTL_MS;
+      assigned.forEach(childId => {
+        if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
+        this._optimisticChores[childId].push({
+          id: '_opt_' + Date.now(), name, value, recurrence: recur,
+          occurrences_required: occ, _optimistic: true, _expiresAt: expiresAt,
+        });
       });
-    }
+      this._syncFromHass();
+      this._updateDOM();
+      const svcData = { name, value, recurrence: recur, occurrences_required: occ,
+        assignment_mode: assigned.length === this._children.length ? 'team' : 'individual',
+        assigned_to: assigned };
+      if (winDays) svcData.occurrence_window_days = winDays;
+      this._callService('add_chore', svcData);
+    });
+
+    // ── Holiday modal ──
+    sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
+    sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
+      const days = parseInt(sr.getElementById('m-holiday-days').value) || 7;
+      this._closeModal('modal-holiday');
+      const until = new Date();
+      until.setDate(until.getDate() + days);
+      this._holidayUntil = until.toISOString();
+      this._callService('set_holiday_mode', { days });
+      this._updateDOM();
+    });
+
+    // ── Pay modal ──
+    sr.getElementById('m-pay-cancel')?.addEventListener('click',  () => this._closeModal('modal-pay'));
+    sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
+      const child = this._activeChild;
+      if (!child) return;
+      this._closeModal('modal-pay');
+      this._optimisticPaid.add(child.childEntryId);
+      this._syncFromHass();
+      this._updateDOM();
+      this._callService('mark_paid', { child_entry_id: child.childEntryId });
+    });
   }
 
+  // ── Action dispatcher (for dynamically rendered elements) ────────────────────
   _handleAction(e) {
     const el     = e.currentTarget;
     const action = el.dataset.action;
+    const sr     = this.shadowRoot;
 
     switch (action) {
-
       case 'set-child':
         this._activeChildId = el.dataset.child;
-        this._render(); break;
-
-      case 'nav':
-        this._view = el.dataset.view;
-        this._render(); break;
-
-      case 'modal-cancel':
-        this._closeModal(el.dataset.modal); break;
-
-      // ── Add chore ──
-      case 'open-add-form':
-        this._openModal('modal-add');
-        setTimeout(() => this._sr('m-name')?.focus(), 80);
+        this._updateDOM();
         break;
 
-      case 'submit-add': {
-        const name     = this._sr('m-name')?.value.trim();
-        const value    = parseFloat(this._sr('m-value')?.value);
-        const recur    = this._sr('m-recur')?.value || 'manual';
-        const occ      = parseInt(this._sr('m-occ')?.value) || 1;
-        const winDays  = occ > 1 ? (parseInt(this._sr('m-window')?.value) || occ * 7) : null;
-        const assigned = [...this.shadowRoot.querySelectorAll('.hapm-children-list input[type=checkbox]:checked')]
-          .map(cb => cb.value);
-        if (!name || !value || !assigned.length) return;
-        this._closeModal('modal-add');
-        const expiresAt = Date.now() + OPTIMISTIC_TTL_MS;
-        assigned.forEach(childId => {
-          if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
-          this._optimisticChores[childId].push({
-            id: '_opt_' + Date.now(), name, value, recurrence: recur,
-            occurrences_required: occ, _optimistic: true, _expiresAt: expiresAt,
-          });
-        });
-        this._syncFromHass(); this._render();
-        const svcData = { name, value, recurrence: recur, occurrences_required: occ,
-          assignment_mode: assigned.length === this._children.length ? 'team' : 'individual',
-          assigned_to: assigned };
-        if (winDays) svcData.occurrence_window_days = winDays;
-        this._callService('add_chore', svcData);
+      case 'open-add-form': {
+        // Reset form
+        sr.getElementById('m-name').value  = '';
+        sr.getElementById('m-value').value = '';
+        sr.getElementById('m-recur').value = 'weekly';
+        sr.getElementById('m-occ').value   = '1';
+        sr.getElementById('m-window-row').classList.remove('visible');
+        // Rebuild child checkboxes
+        sr.getElementById('m-children').innerHTML = this._children.map(c => `
+          <label class="hapm-child-row">
+            <input type="checkbox" value="${esc(c.childEntryId)}"
+              ${c.childEntryId === this._activeChildId ? 'checked' : ''}>
+            <span class="hapm-cdot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
+            <span class="cname">${esc(c.childName)}</span>
+          </label>`).join('');
+        this._openModal('modal-add');
+        setTimeout(() => sr.getElementById('m-name')?.focus(), 80);
         break;
       }
 
-      // ── Chore actions ──
+      case 'open-pay': {
+        const child = this._activeChild;
+        if (!child || child.balance <= 0) return;
+        sr.getElementById('m-pay-msg').innerHTML =
+          `Pay <strong>${esc(child.childName)}</strong> ${fmtMoney(child.balance, child.currency)}?`;
+        this._openModal('modal-pay');
+        break;
+      }
+
       case 'complete':
         el.closest('.chore-card')?.classList.add('completing');
         this._callService('complete_chore', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
@@ -546,53 +647,11 @@ class HapmPanelCard extends HTMLElement {
       case 'pause':
         this._callService('pause_chore', { chore_id: el.dataset.chore, days: 7 });
         break;
-
-      // ── Holiday ──
-      case 'toggle-holiday': {
-        const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
-        if (active) {
-          this._holidayUntil = null;
-          this._callService('clear_holiday_mode', {});
-          this._render();
-        } else {
-          this._openModal('modal-holiday');
-          setTimeout(() => this._sr('m-holiday-days')?.focus(), 80);
-        }
-        break;
-      }
-
-      case 'submit-holiday': {
-        const days = parseInt(this._sr('m-holiday-days')?.value) || 7;
-        this._closeModal('modal-holiday');
-        const until = new Date();
-        until.setDate(until.getDate() + days);
-        this._holidayUntil = until.toISOString();
-        this._callService('set_holiday_mode', { days });
-        this._render();
-        break;
-      }
-
-      // ── Pay ──
-      case 'open-pay': {
-        const child = this._activeChild;
-        if (!child || child.balance <= 0) return;
-        this._openModal('modal-pay');
-        break;
-      }
-
-      case 'submit-pay': {
-        const child = this._activeChild;
-        if (!child) return;
-        this._closeModal('modal-pay');
-        // Optimistically hide the pay button immediately
-        this._optimisticPaid.add(child.childEntryId);
-        this._syncFromHass();
-        this._render();
-        this._callService('mark_paid', { child_entry_id: child.childEntryId });
-        break;
-      }
     }
   }
+
+  _openModal(id)  { this.shadowRoot.getElementById(id)?.classList.remove('hidden'); }
+  _closeModal(id) { this.shadowRoot.getElementById(id)?.classList.add('hidden'); }
 
   getCardSize() { return 6; }
   static getStubConfig() { return {}; }
