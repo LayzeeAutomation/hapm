@@ -1,6 +1,8 @@
 """Config flow for HAPM - Home Assistant Pocket Money."""
 from __future__ import annotations
 
+from typing import Any
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -19,8 +21,8 @@ class HAPMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(
-        self, user_input: dict | None = None
-    ) -> config_entries.FlowResult:
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -29,7 +31,6 @@ class HAPMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not name:
                 errors[CONF_CHILD_NAME] = "name_required"
             else:
-                # Prevent duplicate child names
                 existing = [
                     e.data[CONF_CHILD_NAME]
                     for e in self._async_current_entries()
@@ -63,20 +64,22 @@ class HAPMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
-        """Return the options flow."""
-        return HAPMOptionsFlow(config_entry)
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Return the options flow handler."""
+        return HAPMOptionsFlow()
 
 
 class HAPMOptionsFlow(config_entries.OptionsFlow):
     """Handle HAPM options (edit child settings)."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._entry = config_entry
+    # Do NOT override __init__ or store config_entry manually.
+    # HA injects it as self.config_entry via the base class.
 
     async def async_step_init(
-        self, user_input: dict | None = None
-    ) -> config_entries.FlowResult:
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.OptionsFlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
@@ -85,11 +88,11 @@ class HAPMOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Optional(
                     CONF_AVATAR_COLOUR,
-                    default=self._entry.data.get(CONF_AVATAR_COLOUR, "teal"),
+                    default=self.config_entry.data.get(CONF_AVATAR_COLOUR, "teal"),
                 ): vol.In(AVATAR_COLOURS),
                 vol.Optional(
                     CONF_CURRENCY_SYMBOL,
-                    default=self._entry.data.get(CONF_CURRENCY_SYMBOL, "£"),
+                    default=self.config_entry.data.get(CONF_CURRENCY_SYMBOL, "£"),
                 ): str,
             }
         )
