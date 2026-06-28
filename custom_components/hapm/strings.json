@@ -2,19 +2,32 @@
   "config": {
     "step": {
       "user": {
-        "title": "Add a child profile",
-        "description": "Enter the child's name and preferred currency to create their pocket money tracker.",
+        "title": "Add a child",
+        "description": "Enter the child's name and choose an avatar colour. Each child gets their own chore list, running balance, and pay history.",
         "data": {
           "child_name": "Child's name",
-          "currency": "Currency code (e.g. GBP, USD, EUR)"
+          "avatar_colour": "Avatar colour",
+          "currency_symbol": "Currency symbol"
         }
       }
     },
     "error": {
-      "invalid_child_name": "Child name cannot be empty."
+      "name_required": "Name cannot be empty.",
+      "name_exists": "A child with that name already exists."
     },
     "abort": {
-      "already_configured": "A profile for this child already exists."
+      "already_configured": "This child is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Edit child settings",
+        "data": {
+          "avatar_colour": "Avatar colour",
+          "currency_symbol": "Currency symbol"
+        }
+      }
     }
   }
 }
