@@ -110,6 +110,67 @@ add_chore:
             - shared
             - full
 
+update_chore:
+  name: Update Chore
+  description: Update the mutable fields of an existing chore.
+  fields:
+    chore_id:
+      name: Chore ID
+      description: The ID of the chore to update.
+      required: true
+      selector:
+        text:
+    name:
+      name: Name
+      description: New display name.
+      required: false
+      selector:
+        text:
+    description:
+      name: Description
+      description: New description (omit to leave unchanged).
+      required: false
+      selector:
+        text:
+    value:
+      name: Value
+      description: New value per completion.
+      required: false
+      selector:
+        number:
+          min: 0.01
+          max: 100
+          step: 0.01
+          mode: box
+    recurrence:
+      name: Recurrence
+      required: false
+      selector:
+        select:
+          options:
+            - daily
+            - weekly
+            - monthly
+            - manual
+    occurrences_required:
+      name: Occurrences Required
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 1
+          mode: box
+    occurrence_window_days:
+      name: Occurrence Window (days)
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 365
+          step: 1
+          mode: box
+
 complete_chore:
   name: Complete Chore
   description: Mark a standard single-occurrence chore as complete and credit the child's balance.
@@ -177,7 +238,7 @@ mark_paid:
 
 pause_chore:
   name: Pause Chore
-  description: Pause a single chore for a given number of days.
+  description: Pause a chore. Omit days to pause indefinitely until manually resumed.
   fields:
     chore_id:
       name: Chore ID
@@ -187,8 +248,8 @@ pause_chore:
         text:
     days:
       name: Days
-      description: Number of days to pause the chore for.
-      required: true
+      description: Number of days to pause for. Leave blank for an indefinite pause.
+      required: false
       example: 7
       selector:
         number:
@@ -199,7 +260,7 @@ pause_chore:
 
 resume_chore:
   name: Resume Chore
-  description: Immediately lift a pause on a chore.
+  description: Immediately lift a pause on a chore and make it due now.
   fields:
     chore_id:
       name: Chore ID

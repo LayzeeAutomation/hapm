@@ -1,16 +1,17 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.15
+ * HAPM Pocket Money Panel Card  v0.1.16
  *
- * Changes vs 0.1.14:
- *   1. Pause button now opens a modal asking how many days (optional).
- *      Leaving the field blank pauses the chore indefinitely until resumed.
- *   2. New "Paused" tab (between Chores and Ledger) lists all paused chores
- *      for the active child with a Resume button on each.
- *   3. Backend: services.py days is now optional; store.py uses a far-future
- *      sentinel for indefinite pauses.
+ * Changes vs 0.1.15:
+ *   1. Edit button (✏️) on every chore card — opens a pre-filled sheet.
+ *   2. Edit modal lets you change name, description, value, recurrence
+ *      and occurrences required, then calls the new update_chore service.
+ *   3. Edit button also appears on paused chore cards.
+ *   4. manifest.json bumped to 0.1.16.
+ *   Fix included from hotfix: resume_chore resets next_due so chore
+ *   reappears immediately in the Chores tab.
  */
 
-const HAPM_VERSION = '0.1.15';
+const HAPM_VERSION = '0.1.16';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -37,7 +38,6 @@ function esc(s) {
 function daysRemaining(isoUntil) {
   return Math.max(0, Math.ceil((new Date(isoUntil) - new Date()) / 86400000));
 }
-// Is this paused_until value the indefinite sentinel (year 9999)?
 function isIndefinitePause(isoUntil) {
   return isoUntil && new Date(isoUntil).getFullYear() >= 9999;
 }
@@ -216,7 +216,7 @@ class HapmPanelCard extends HTMLElement {
     }
   }
 
-  // ── Data sync ────────────────────────────────────────────────────────────
+  // ── Data sync ─────────────────────────────────────────────────────────────
   _syncFromHass() {
     if (!this._hass) return;
     const now    = Date.now();
@@ -247,7 +247,6 @@ class HapmPanelCard extends HTMLElement {
       const dueSensorId  = entityId.replace('_pocket_money_balance','_chores_due');
       const dueSensor    = states[dueSensorId];
       const serverChores = dueSensor?.attributes?.due_chores || [];
-      // Paused chores come from a separate attribute on the due sensor
       const pausedChores = dueSensor?.attributes?.paused_chores || [];
       const lastPaid     = attrs.last_paid || null;
       const optimistic   = this._optimisticChores[childEntryId] || [];
@@ -281,12 +280,12 @@ class HapmPanelCard extends HTMLElement {
   }
 
   _anyModalOpen() {
-    return ['modal-add','modal-holiday','modal-pay','modal-pause'].some(
+    return ['modal-add','modal-edit','modal-holiday','modal-pay','modal-pause'].some(
       id => !this.shadowRoot.getElementById(id)?.classList.contains('hidden')
     );
   }
 
-  // ── Build DOM — called ONCE ───────────────────────────────────────────────
+  // ── Build DOM ─────────────────────────────────────────────────────────────
   _buildDOM() {
     const sr = this.shadowRoot;
     sr.innerHTML = '';
@@ -322,15 +321,18 @@ class HapmPanelCard extends HTMLElement {
       <div class="panel" id="panel"></div>`;
     sr.appendChild(card);
 
-    // Modals container — use createElement, NOT sr.insertAdjacentHTML (unsupported on iOS Safari)
     const modals = document.createElement('div');
     modals.innerHTML = `
+      <!-- Add Chore -->
       <div class="hapm-backdrop hidden" id="modal-add">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
           <div class="hapm-title">➕ Add Chore</div>
           <label class="hapm-label">Chore Name</label>
           <input class="hapm-input" id="m-name" type="text" placeholder="e.g. Tidy bedroom"
+            autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <label class="hapm-label">Description (optional)</label>
+          <input class="hapm-input" id="m-desc" type="text" placeholder="Extra detail…"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
           <div class="hapm-2col">
             <div>
@@ -363,6 +365,47 @@ class HapmPanelCard extends HTMLElement {
         </div>
       </div>
 
+      <!-- Edit Chore -->
+      <div class="hapm-backdrop hidden" id="modal-edit">
+        <div class="hapm-sheet">
+          <div class="hapm-handle"></div>
+          <div class="hapm-title">✏️ Edit Chore</div>
+          <label class="hapm-label">Chore Name</label>
+          <input class="hapm-input" id="e-name" type="text"
+            autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <label class="hapm-label">Description (optional)</label>
+          <input class="hapm-input" id="e-desc" type="text"
+            autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <div class="hapm-2col">
+            <div>
+              <label class="hapm-label">Value (£)</label>
+              <input class="hapm-input" id="e-value" type="number"
+                inputmode="decimal" min="0.01" step="0.01">
+            </div>
+            <div>
+              <label class="hapm-label">Recurrence</label>
+              <select class="hapm-select" id="e-recur">
+                <option value="manual">Manual</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+          </div>
+          <label class="hapm-label">Occurrences needed</label>
+          <input class="hapm-input" id="e-occ" type="number" inputmode="numeric" min="1">
+          <div class="hapm-window-row" id="e-window-row">
+            <label class="hapm-label">Completion window (days)</label>
+            <input class="hapm-input" id="e-window" type="number" inputmode="numeric" min="1">
+          </div>
+          <div class="hapm-actions">
+            <button class="hapm-btn hapm-btn-cancel" id="m-edit-cancel">Cancel</button>
+            <button class="hapm-btn hapm-btn-ok"     id="m-edit-submit">Save Changes</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Holiday -->
       <div class="hapm-backdrop hidden" id="modal-holiday">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
@@ -377,6 +420,7 @@ class HapmPanelCard extends HTMLElement {
         </div>
       </div>
 
+      <!-- Pay -->
       <div class="hapm-backdrop hidden" id="modal-pay">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
@@ -389,6 +433,7 @@ class HapmPanelCard extends HTMLElement {
         </div>
       </div>
 
+      <!-- Pause -->
       <div class="hapm-backdrop hidden" id="modal-pause">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
@@ -410,7 +455,7 @@ class HapmPanelCard extends HTMLElement {
     this._updateDOM();
   }
 
-  // ── Update DOM — surgical patches only ───────────────────────────────────
+  // ── Update DOM ────────────────────────────────────────────────────────────
   _updateDOM() {
     const sr    = this.shadowRoot;
     const child = this._activeChild;
@@ -516,6 +561,8 @@ class HapmPanelCard extends HTMLElement {
 
   _pausedCardHTML(c, child) {
     const label = fmtPausedUntil(c.paused_until);
+    // Encode the full chore object for the edit modal
+    const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card paused-card">
       <div>
         <div class="chore-top">
@@ -530,7 +577,8 @@ class HapmPanelCard extends HTMLElement {
           </div>
         </div>
         <div class="chore-actions">
-          <button class="btn btn-warn" data-action="resume" data-chore="${esc(c.id)}">▶ Resume</button>
+          <button class="btn btn-warn"  data-action="resume" data-chore="${esc(c.id)}">▶ Resume</button>
+          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">✏️ Edit</button>
         </div>
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
@@ -540,6 +588,7 @@ class HapmPanelCard extends HTMLElement {
   _choreCardHTML(c, child) {
     const isMulti = c.occurrences_required > 1;
     const isOpt   = !!c._optimistic;
+    const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card${isOpt ? ' optimistic' : ''}">
       <div>
         <div class="chore-top">
@@ -560,13 +609,14 @@ class HapmPanelCard extends HTMLElement {
             ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log occurrence</button>`
             : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done ✓</button>`}
           <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">Pause</button>
+          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">✏️</button>
         </div>` : ''}
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
     </div>`;
   }
 
-  // ── Bind events — called ONCE ─────────────────────────────────────────────
+  // ── Bind events ───────────────────────────────────────────────────────────
   _bindEvents() {
     const sr = this.shadowRoot;
 
@@ -593,7 +643,7 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
-    // Add chore modal
+    // ── Add chore modal
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value) || 1;
@@ -630,7 +680,33 @@ class HapmPanelCard extends HTMLElement {
       this._callService('add_chore', svcData);
     });
 
-    // Holiday modal
+    // ── Edit chore modal
+    sr.getElementById('m-edit-cancel')?.addEventListener('click', () => this._closeModal('modal-edit'));
+    sr.getElementById('e-occ')?.addEventListener('input', () => {
+      const occ = parseInt(sr.getElementById('e-occ').value) || 1;
+      sr.getElementById('e-window-row').classList.toggle('visible', occ > 1);
+    });
+    sr.getElementById('m-edit-submit')?.addEventListener('click', () => {
+      const modal   = sr.getElementById('modal-edit');
+      const choreId = modal.dataset.choreId;
+      const name    = sr.getElementById('e-name').value.trim();
+      const desc    = sr.getElementById('e-desc').value.trim();
+      const value   = parseFloat(sr.getElementById('e-value').value);
+      const recur   = sr.getElementById('e-recur').value || 'manual';
+      const occ     = parseInt(sr.getElementById('e-occ').value) || 1;
+      const winDays = occ > 1 ? (parseInt(sr.getElementById('e-window').value) || null) : null;
+      if (!name || !value) {
+        if (!name) sr.getElementById('e-name').focus();
+        return;
+      }
+      this._closeModal('modal-edit');
+      const svcData = { chore_id: choreId, name, value, recurrence: recur,
+        occurrences_required: occ, description: desc || null };
+      if (winDays) svcData.occurrence_window_days = winDays;
+      this._callService('update_chore', svcData);
+    });
+
+    // ── Holiday modal
     sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
     sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
       const days = parseInt(sr.getElementById('m-holiday-days').value) || 7;
@@ -642,7 +718,7 @@ class HapmPanelCard extends HTMLElement {
       this._updateDOM();
     });
 
-    // Pay modal
+    // ── Pay modal
     sr.getElementById('m-pay-cancel')?.addEventListener('click', () => this._closeModal('modal-pay'));
     sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
       const child = this._activeChild;
@@ -654,7 +730,7 @@ class HapmPanelCard extends HTMLElement {
       this._callService('mark_paid', { child_entry_id: child.childEntryId });
     });
 
-    // Pause modal
+    // ── Pause modal
     sr.getElementById('m-pause-cancel')?.addEventListener('click', () => this._closeModal('modal-pause'));
     sr.getElementById('m-pause-submit')?.addEventListener('click', () => {
       const choreId = sr.getElementById('modal-pause').dataset.choreId;
@@ -681,6 +757,7 @@ class HapmPanelCard extends HTMLElement {
 
       case 'open-add-form': {
         sr.getElementById('m-name').value  = '';
+        sr.getElementById('m-desc').value  = '';
         sr.getElementById('m-value').value = '';
         sr.getElementById('m-recur').value = 'weekly';
         sr.getElementById('m-occ').value   = '1';
@@ -694,6 +771,25 @@ class HapmPanelCard extends HTMLElement {
           </label>`).join('');
         this._openModal('modal-add');
         setTimeout(() => sr.getElementById('m-name')?.focus(), 80);
+        break;
+      }
+
+      case 'open-edit': {
+        let chore;
+        try { chore = JSON.parse(el.dataset.choreJson); } catch { break; }
+        const modal = sr.getElementById('modal-edit');
+        modal.dataset.choreId = chore.id;
+        sr.getElementById('e-name').value  = chore.name  || '';
+        sr.getElementById('e-desc').value  = chore.description || '';
+        sr.getElementById('e-value').value = chore.value || '';
+        sr.getElementById('e-recur').value = chore.recurrence || 'manual';
+        const occ = chore.occurrences_required || 1;
+        sr.getElementById('e-occ').value   = occ;
+        const winRow = sr.getElementById('e-window-row');
+        winRow.classList.toggle('visible', occ > 1);
+        sr.getElementById('e-window').value = chore.occurrence_window_days || (occ > 1 ? occ * 7 : '');
+        this._openModal('modal-edit');
+        setTimeout(() => sr.getElementById('e-name')?.focus(), 80);
         break;
       }
 
@@ -738,7 +834,6 @@ class HapmPanelCard extends HTMLElement {
   static getStubConfig() { return {}; }
 }
 
-// Guard against double-registration during Lovelace hot-reload
 if (!customElements.get('hapm-panel-card')) {
   customElements.define('hapm-panel-card', HapmPanelCard);
 }
