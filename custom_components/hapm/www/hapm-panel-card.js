@@ -1,5 +1,5 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.4
+ * HAPM Pocket Money Panel Card  v0.1.5
  * A self-contained Lovelace custom card for the HAPM integration.
  *
  * Usage in Lovelace:
@@ -9,7 +9,7 @@
  * so it is completely outside the shadow-DOM re-render cycle.
  */
 
-const HAPM_VERSION = '0.1.4';
+const HAPM_VERSION = '0.1.5';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000; // keep optimistic chores for 15s max
 
@@ -329,8 +329,29 @@ class HapmPanelCard extends HTMLElement {
     if (!this._hass) return;
     const now = Date.now();
     const states = this._hass.states;
-    const children = [];
 
+    // ── Step 1: clean up _optimisticChores in a single pass BEFORE the child loop.
+    // This is the critical fix: we never touch _optimisticChores inside the per-child
+    // loop, so processing child A can never wipe child B's pending entries.
+    for (const childId of Object.keys(this._optimisticChores)) {
+      const dueSensorId = Object.keys(states).find(id =>
+        id.startsWith('sensor.') &&
+        id.endsWith('_chores_due') &&
+        (states[id]?.attributes?.entry_id === childId)
+      );
+      const serverChores = (dueSensorId ? states[dueSensorId]?.attributes?.due_chores : null) || [];
+      const stillPending = this._optimisticChores[childId].filter(o =>
+        now < o._expiresAt && !serverChores.find(s => s.name === o.name)
+      );
+      if (stillPending.length) {
+        this._optimisticChores[childId] = stillPending;
+      } else {
+        delete this._optimisticChores[childId];
+      }
+    }
+
+    // ── Step 2: build children array, merging server chores + any still-pending optimistic ones
+    const children = [];
     for (const [entityId, state] of Object.entries(states)) {
       if (!entityId.startsWith('sensor.') || !entityId.endsWith('_pocket_money_balance')) continue;
       const attrs = state.attributes || {};
@@ -343,21 +364,10 @@ class HapmPanelCard extends HTMLElement {
       const serverChores = states[dueSensorId]?.attributes?.due_chores || [];
       const lastPaid = attrs.last_paid || null;
 
-      // Keep optimistic chores that:
-      // 1. Haven't expired (within TTL), AND
-      // 2. Haven't been confirmed by the server yet (matched by name)
-      const pending = this._optimisticChores[childEntryId] || [];
-      const stillPending = pending.filter(o =>
-        now < o._expiresAt && !serverChores.find(s => s.name === o.name)
-      );
-      // Update stored list (drop expired / confirmed)
-      if (stillPending.length) {
-        this._optimisticChores[childEntryId] = stillPending;
-      } else {
-        delete this._optimisticChores[childEntryId];
-      }
+      // Merge: server chores + any still-live optimistic chores (already cleaned above)
+      const optimistic = this._optimisticChores[childEntryId] || [];
+      const dueChores = [...serverChores, ...optimistic];
 
-      const dueChores = [...serverChores, ...stillPending];
       children.push({ childEntryId, childName, colour, currency, balance, dueChores, lastPaid });
     }
 
@@ -548,7 +558,6 @@ class HapmPanelCard extends HTMLElement {
             _optimistic: true,
             _expiresAt: expiresAt,
           };
-          // Store optimistic chore — NOT cleared by _syncFromHass until TTL or server confirms
           assignedTo.forEach(childId => {
             if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
             this._optimisticChores[childId].push({ ...optimisticChore });
