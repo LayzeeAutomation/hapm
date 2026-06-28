@@ -1,0 +1,20 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a child profile",
+        "description": "Enter the child's name and preferred currency to create their pocket money tracker.",
+        "data": {
+          "child_name": "Child's name",
+          "currency": "Currency code (e.g. GBP, USD, EUR)"
+        }
+      }
+    },
+    "error": {
+      "invalid_child_name": "Child name cannot be empty."
+    },
+    "abort": {
+      "already_configured": "A profile for this child already exists."
+    }
+  }
+}

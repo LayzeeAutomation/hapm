@@ -1,0 +1,11 @@
+{
+  "domain": "hapm",
+  "name": "HAPM - Home Assistant Pocket Money",
+  "version": "0.1.0",
+  "documentation": "https://github.com/LayzeeAutomation/hapm",
+  "issue_tracker": "https://github.com/LayzeeAutomation/hapm/issues",
+  "codeowners": ["@LayzeeAutomation"],
+  "config_flow": true,
+  "iot_class": "local_push",
+  "requirements": []
+}
