@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 _LOGGER = logging.getLogger(__name__)
 
 # Bump this every time hapm-panel-card.js changes.
-CARD_VERSION = "0.1.3"
+CARD_VERSION = "0.1.7"
 CARD_BASE_URL = "/hapm_static/hapm-panel-card.js"
 CARD_URL = f"{CARD_BASE_URL}?v={CARD_VERSION}"
 WWW_DIR = pathlib.Path(__file__).parent / "www"
@@ -82,8 +82,6 @@ async def _ensure_lovelace_resource(hass: HomeAssistant) -> bool:
     was not ready yet (caller should retry).
     """
     try:
-        # HA stores a LovelaceData *object* at hass.data["lovelace"] —
-        # resources is an attribute, NOT a dict key.
         lovelace = hass.data.get("lovelace")
         if lovelace is None:
             _LOGGER.debug("HAPM: hass.data['lovelace'] not present yet, will retry.")
