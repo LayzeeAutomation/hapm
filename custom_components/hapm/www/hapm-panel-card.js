@@ -1,13 +1,16 @@
 /**
- * HAPM Pocket Money Panel Card
+ * HAPM Pocket Money Panel Card  v0.1.2
  * A self-contained Lovelace custom card for the HAPM integration.
- * Install via HACS — no manual file copying required.
  *
  * Usage in Lovelace:
  *   type: custom:hapm-panel-card
+ *
+ * iOS fix: the "Add Chore" form is rendered as a document.body modal overlay
+ * so it is completely outside the shadow-DOM re-render cycle. Lovelace state
+ * updates never touch the modal DOM, keeping the keyboard and dropdowns alive.
  */
 
-const HAPM_VERSION = '0.1.1';
+const HAPM_VERSION = '0.1.2';
 const CURRENCY_DEFAULT = '£';
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -21,24 +24,19 @@ const STYLES = `
     border-radius: var(--ha-card-border-radius, 12px);
     overflow: hidden; }
 
-  /* ── Tabs ── */
-  .child-tabs { display: flex; gap: 8px; flex-wrap: wrap;
-    padding: 16px 16px 0; }
+  .child-tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 16px 16px 0; }
   .child-tab { display: flex; align-items: center; gap: 6px;
     padding: 6px 14px; border-radius: 9999px;
     border: 1.5px solid var(--divider-color);
     cursor: pointer; font-size: 13px; font-weight: 500;
-    background: none; color: var(--primary-text-color);
-    transition: all 150ms ease; }
+    background: none; color: var(--primary-text-color); transition: all 150ms ease; }
   .child-tab:hover { border-color: var(--primary-color); color: var(--primary-color); }
   .child-tab.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
   .dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
 
-  /* ── KPIs ── */
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 12px; padding: 14px 16px; }
-  .kpi { background: var(--secondary-background-color);
-    border-radius: 10px; padding: 12px 14px; }
+  .kpi { background: var(--secondary-background-color); border-radius: 10px; padding: 12px 14px; }
   .kpi-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--secondary-text-color); margin-bottom: 4px; }
   .kpi-value { font-size: 22px; font-weight: 700; line-height: 1;
@@ -46,7 +44,6 @@ const STYLES = `
   .kpi-value.positive { color: var(--success-color, #6daa45); }
   .kpi-sub { font-size: 11px; color: var(--secondary-text-color); margin-top: 3px; }
 
-  /* ── Nav ── */
   .nav { display: flex; gap: 4px; padding: 0 16px;
     border-bottom: 1px solid var(--divider-color); }
   .nav-btn { padding: 10px 14px; font-size: 13px; font-weight: 500;
@@ -60,126 +57,121 @@ const STYLES = `
     border-radius: 9999px; font-size: 10px; font-weight: 700;
     padding: 1px 6px; margin-left: 4px; }
 
-  /* ── View panels ── */
   .panel { padding: 14px 16px; }
 
-  /* ── Chore cards ── */
   .chore-card { background: var(--secondary-background-color);
     border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
     display: grid; grid-template-columns: 1fr auto; gap: 8px;
     align-items: start; transition: opacity 300ms ease; }
   .chore-card.completing { opacity: 0.35; pointer-events: none; }
-  .chore-card.paused { opacity: 0.6; }
   .chore-top { display: flex; align-items: flex-start; gap: 10px; }
   .chore-icon { width: 34px; height: 34px; border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 18px; background: var(--card-background-color, #fff);
-    flex-shrink: 0; }
+    font-size: 18px; background: var(--card-background-color, #fff); flex-shrink: 0; }
   .chore-name { font-weight: 600; font-size: 13px; line-height: 1.3; }
   .chore-desc { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; }
   .chore-meta { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
   .pill { display: inline-flex; align-items: center; padding: 2px 7px;
     border-radius: 9999px; font-size: 10px; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.03em; }
-  .pill-due     { background: rgba(109,170,69,0.15); color: var(--success-color,#6daa45); }
-  .pill-paused  { background: rgba(232,175,52,0.15); color: #c9920a; }
-  .pill-multi   { background: rgba(124,99,209,0.15); color: #7c63d1; }
-  .pill-team    { background: rgba(253,171,67,0.15); color: #c97700; }
-  .pill-recur   { background: rgba(85,145,199,0.15); color: #5591c7; }
+  .pill-due    { background: rgba(109,170,69,0.15); color: var(--success-color,#6daa45); }
+  .pill-multi  { background: rgba(124,99,209,0.15); color: #7c63d1; }
+  .pill-recur  { background: rgba(85,145,199,0.15);  color: #5591c7; }
   .occ-track { display: flex; gap: 4px; margin-top: 6px; }
   .occ-dot { width: 9px; height: 9px; border-radius: 9999px;
-    background: var(--divider-color); border: 1.5px solid var(--secondary-text-color);
-    transition: all 200ms ease; }
-  .occ-dot.done { background: var(--primary-color); border-color: var(--primary-color); }
+    background: var(--divider-color); border: 1.5px solid var(--secondary-text-color); }
   .chore-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-  .chore-value { font-weight: 700; font-size: 15px;
-    color: var(--success-color, #6daa45);
+  .chore-value { font-weight: 700; font-size: 15px; color: var(--success-color, #6daa45);
     font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-  /* ── Buttons ── */
   .btn { display: inline-flex; align-items: center; gap: 5px;
     padding: 5px 12px; border-radius: 8px; font-size: 12px;
     font-weight: 600; cursor: pointer; border: none;
     font-family: inherit; transition: all 150ms ease; }
   .btn-primary { background: var(--primary-color); color: #fff; }
   .btn-primary:hover { filter: brightness(1.1); }
-  .btn-ghost { background: transparent;
-    border: 1.5px solid var(--divider-color);
+  .btn-ghost { background: transparent; border: 1.5px solid var(--divider-color);
     color: var(--secondary-text-color); }
   .btn-ghost:hover { border-color: var(--primary-color); color: var(--primary-color); }
-  .btn-danger { background: transparent;
-    border: 1.5px solid var(--divider-color);
-    color: var(--error-color, #db4437); }
-  .btn-success { background: var(--success-color, #6daa45); color: #fff; }
-  .btn-success:hover { filter: brightness(1.1); }
   .btn-pay { width: 100%; padding: 10px; font-size: 14px; margin-top: 8px;
     background: var(--success-color, #6daa45); color: #fff;
     border: none; border-radius: 10px; font-family: inherit;
-    font-weight: 700; cursor: pointer; transition: filter 150ms; }
-  .btn-pay:hover { filter: brightness(1.1); }
+    font-weight: 700; cursor: pointer; }
   .btn-holiday { display: flex; align-items: center; gap: 6px;
     padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600;
     cursor: pointer; border: none; font-family: inherit;
-    background: rgba(232,175,52,0.15); color: #c9920a; transition: all 150ms; }
+    background: rgba(232,175,52,0.15); color: #c9920a; }
   .btn-holiday.active { background: #c9920a; color: #fff; }
 
-  /* ── Top bar ── */
   .topbar { display: flex; align-items: center; justify-content: space-between;
     padding: 12px 16px; border-bottom: 1px solid var(--divider-color); }
-  .topbar-title { font-weight: 700; font-size: 15px;
-    display: flex; align-items: center; gap: 8px; }
-  .topbar-icon { font-size: 20px; }
+  .topbar-title { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
 
-  /* ── Ledger ── */
-  .ledger-item { display: grid;
-    grid-template-columns: auto 1fr auto auto;
-    gap: 8px; align-items: center; padding: 10px 0;
-    border-bottom: 1px solid var(--divider-color); font-size: 13px; }
-  .ledger-item:last-child { border-bottom: none; }
-  .ledger-pill { padding: 2px 7px; border-radius: 9999px;
-    font-size: 10px; font-weight: 700; text-transform: uppercase; }
-  .ledger-ts { font-size: 11px; color: var(--secondary-text-color); }
-  .amount-cr { color: var(--success-color, #6daa45); font-weight: 700;
-    font-variant-numeric: tabular-nums; }
-  .amount-dr { color: var(--error-color, #db4437); font-weight: 700;
-    font-variant-numeric: tabular-nums; }
-
-  /* ── Empty state ── */
   .empty { text-align: center; padding: 32px 16px;
     color: var(--secondary-text-color); font-size: 13px; }
   .empty-icon { font-size: 32px; margin-bottom: 8px; }
-
-  /* ── Add chore form ── */
-  .add-form { background: var(--secondary-background-color);
-    border-radius: 10px; padding: 14px; margin-bottom: 10px; }
-  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-    margin-bottom: 10px; }
-  .form-row.full { grid-template-columns: 1fr; }
-  .form-group { display: flex; flex-direction: column; gap: 4px; }
-  .form-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--secondary-text-color); }
-  .form-input, .form-select { background: var(--card-background-color, #fff);
-    border: 1.5px solid var(--divider-color); border-radius: 8px;
-    padding: 7px 10px; font-size: 16px; color: var(--primary-text-color);
-    font-family: inherit; transition: border-color 150ms; width: 100%; }
-  .form-input:focus, .form-select:focus {
-    outline: none; border-color: var(--primary-color); }
-  .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 `;
 
-// ── Avatar colour map ─────────────────────────────────────────────────────────
+// Modal styles injected into document.head once — lives outside shadow DOM
+const MODAL_STYLES = `
+  .hapm-modal-backdrop {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(0,0,0,0.55);
+    display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .hapm-modal-backdrop.hidden { display: none; }
+  .hapm-modal-sheet {
+    background: #fff; width: 100%; max-width: 520px;
+    border-radius: 20px 20px 0 0;
+    padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -4px 32px rgba(0,0,0,0.18);
+    font-family: -apple-system, 'DM Sans', sans-serif;
+    font-size: 14px; color: #111;
+  }
+  @media (prefers-color-scheme: dark) {
+    .hapm-modal-sheet { background: #1c1c1e; color: #f2f2f7; }
+    .hapm-modal-input, .hapm-modal-select {
+      background: #2c2c2e !important; color: #f2f2f7 !important;
+      border-color: #3a3a3c !important;
+    }
+  }
+  .hapm-modal-handle { width: 36px; height: 4px; border-radius: 2px;
+    background: #ccc; margin: 0 auto 16px; }
+  .hapm-modal-title { font-weight: 700; font-size: 17px; margin-bottom: 16px; }
+  .hapm-modal-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: #888; margin-bottom: 4px; display: block; }
+  .hapm-modal-input, .hapm-modal-select {
+    width: 100%; padding: 10px 12px; font-size: 16px;
+    border: 1.5px solid #ddd; border-radius: 10px;
+    font-family: inherit; background: #f9f9f9; color: #111;
+    box-sizing: border-box; margin-bottom: 12px;
+    -webkit-appearance: none; appearance: none;
+  }
+  .hapm-modal-input:focus, .hapm-modal-select:focus {
+    outline: none; border-color: #01696f;
+  }
+  .hapm-modal-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .hapm-modal-row .hapm-modal-input,
+  .hapm-modal-row .hapm-modal-select { margin-bottom: 0; }
+  .hapm-modal-row-wrap { margin-bottom: 12px; }
+  .hapm-modal-actions { display: flex; gap: 10px; margin-top: 4px; }
+  .hapm-modal-btn { flex: 1; padding: 13px; border-radius: 12px; font-size: 15px;
+    font-weight: 700; cursor: pointer; border: none; font-family: inherit; }
+  .hapm-modal-btn-cancel { background: #f0f0f0; color: #333; }
+  .hapm-modal-btn-submit { background: #01696f; color: #fff; }
+`;
+
+// ── Colour / icon maps ────────────────────────────────────────────────────────
 const COLOUR_MAP = {
-  teal: 'var(--primary-color)',
-  blue: '#5591c7', purple: '#7c63d1', orange: '#fdab43',
-  gold: '#e8af34', green: '#6daa45', red: '#db4437',
-  pink: '#e8619a', grey: '#9e9e9e',
+  teal: 'var(--primary-color)', blue: '#5591c7', purple: '#7c63d1',
+  orange: '#fdab43', gold: '#e8af34', green: '#6daa45',
+  red: '#db4437', pink: '#e8619a', grey: '#9e9e9e',
 };
 const CHORE_ICONS = ['🧹','🛏️','🍽️','🐶','🌿','🧺','🚿','📚','🗑️','🧽'];
 
-// ── Helper functions ──────────────────────────────────────────────────────────
-function fmtMoney(v, sym = CURRENCY_DEFAULT) {
-  return sym + Math.abs(v).toFixed(2);
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmtMoney(v, sym = CURRENCY_DEFAULT) { return sym + Math.abs(v).toFixed(2); }
 function fmtDate(iso) {
   const d = new Date(iso), now = new Date(), diff = now - d;
   if (diff < 60000) return 'Just now';
@@ -191,6 +183,119 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Inject modal styles into document head once
+if (!document.getElementById('hapm-modal-styles')) {
+  const st = document.createElement('style');
+  st.id = 'hapm-modal-styles';
+  st.textContent = MODAL_STYLES;
+  document.head.appendChild(st);
+}
+
+// ── Modal singleton ───────────────────────────────────────────────────────────
+// One modal element shared by all card instances, lives on document.body.
+// Never touched by shadowRoot.innerHTML replacements.
+let _hapmModal = null;
+let _hapmModalCallback = null;
+
+function _getModal() {
+  if (_hapmModal) return _hapmModal;
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'hapm-modal-backdrop hidden';
+  backdrop.id = 'hapm-add-chore-modal';
+  backdrop.innerHTML = `
+    <div class="hapm-modal-sheet" id="hapm-modal-sheet">
+      <div class="hapm-modal-handle"></div>
+      <div class="hapm-modal-title">➕ Add Chore</div>
+
+      <label class="hapm-modal-label">Chore Name</label>
+      <input class="hapm-modal-input" id="hm-name" type="text"
+        placeholder="e.g. Tidy bedroom"
+        autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false">
+
+      <div class="hapm-modal-row hapm-modal-row-wrap">
+        <div>
+          <label class="hapm-modal-label">Value (${CURRENCY_DEFAULT})</label>
+          <input class="hapm-modal-input" id="hm-value" type="number"
+            inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
+        </div>
+        <div>
+          <label class="hapm-modal-label">Recurrence</label>
+          <select class="hapm-modal-select" id="hm-recur">
+            <option value="manual">Manual</option>
+            <option value="daily">Daily</option>
+            <option value="weekly" selected>Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="hapm-modal-row hapm-modal-row-wrap">
+        <div>
+          <label class="hapm-modal-label">Occurrences</label>
+          <input class="hapm-modal-input" id="hm-occ" type="number"
+            inputmode="numeric" min="1" value="1">
+        </div>
+        <div>
+          <label class="hapm-modal-label">Assigned To</label>
+          <select class="hapm-modal-select" id="hm-assign">
+            <option value="individual">Individual</option>
+            <option value="team">Team</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="hapm-modal-actions">
+        <button class="hapm-modal-btn hapm-modal-btn-cancel" id="hm-cancel">Cancel</button>
+        <button class="hapm-modal-btn hapm-modal-btn-submit" id="hm-submit">Add Chore</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(backdrop);
+  _hapmModal = backdrop;
+
+  // Close on backdrop tap (outside sheet)
+  backdrop.addEventListener('click', e => {
+    if (e.target === backdrop) _closeModal();
+  });
+  document.getElementById('hm-cancel').addEventListener('click', _closeModal);
+  document.getElementById('hm-submit').addEventListener('click', () => {
+    const name     = document.getElementById('hm-name').value.trim();
+    const value    = parseFloat(document.getElementById('hm-value').value);
+    const recur    = document.getElementById('hm-recur').value;
+    const occ      = parseInt(document.getElementById('hm-occ').value) || 1;
+    const assign   = document.getElementById('hm-assign').value;
+    if (!name || !value) {
+      document.getElementById('hm-name').focus();
+      return;
+    }
+    if (_hapmModalCallback) _hapmModalCallback({ name, value, recur, occ, assign });
+    _closeModal();
+  });
+
+  return backdrop;
+}
+
+function _openModal(callback) {
+  const modal = _getModal();
+  // Reset fields
+  document.getElementById('hm-name').value  = '';
+  document.getElementById('hm-value').value = '';
+  document.getElementById('hm-recur').value = 'weekly';
+  document.getElementById('hm-occ').value   = '1';
+  document.getElementById('hm-assign').value = 'individual';
+  _hapmModalCallback = callback;
+  modal.classList.remove('hidden');
+  // Small delay lets the sheet animate in before focus (avoids iOS scroll jump)
+  setTimeout(() => document.getElementById('hm-name').focus(), 80);
+}
+
+function _closeModal() {
+  _getModal().classList.add('hidden');
+  _hapmModalCallback = null;
+}
+
 // ── Custom element ────────────────────────────────────────────────────────────
 class HapmPanelCard extends HTMLElement {
   constructor() {
@@ -200,24 +305,15 @@ class HapmPanelCard extends HTMLElement {
     this._hass = null;
     this._activeChildId = null;
     this._view = 'chores';
-    this._showAddForm = false;
     this._holidayMode = false;
     this._children = [];
-    // Persisted form state — survives hass re-renders while form is open
-    this._formState = { name: '', value: '', recurrence: 'weekly', occurrences: '1', assignMode: 'individual' };
   }
 
-  setConfig(config) {
-    this._config = config;
-  }
+  setConfig(config) { this._config = config; }
 
   set hass(hass) {
     this._hass = hass;
     this._syncFromHass();
-    // ── iOS fix: never re-render while the add form is open.
-    // Keyboard / dropdown focus triggers hass updates; destroying the DOM
-    // dismisses the keyboard and resets dropdowns instantly on iOS Safari.
-    if (this._showAddForm) return;
     this._render();
   }
 
@@ -225,7 +321,6 @@ class HapmPanelCard extends HTMLElement {
     if (!this._hass) return;
     const states = this._hass.states;
     const children = [];
-
     for (const [entityId, state] of Object.entries(states)) {
       if (!entityId.startsWith('sensor.') || !entityId.endsWith('_pocket_money_balance')) continue;
       const attrs = state.attributes || {};
@@ -235,30 +330,16 @@ class HapmPanelCard extends HTMLElement {
       const currency = attrs.currency || CURRENCY_DEFAULT;
       const balance = parseFloat(state.state) || 0;
       const dueSensorId = entityId.replace('_pocket_money_balance', '_chores_due');
-      const dueSensor = states[dueSensorId];
-      const dueChores = dueSensor?.attributes?.due_chores || [];
+      const dueChores = states[dueSensorId]?.attributes?.due_chores || [];
       const lastPaid = attrs.last_paid || null;
       children.push({ childEntryId, childName, colour, currency, balance, dueChores, lastPaid });
     }
-
     if (children.length) {
       this._children = children;
       if (!this._activeChildId || !children.find(c => c.childEntryId === this._activeChildId)) {
         this._activeChildId = children[0].childEntryId;
       }
     }
-  }
-
-  // Snapshot current form field values into _formState before any re-render
-  _saveFormState() {
-    const sr = this.shadowRoot;
-    this._formState = {
-      name:       sr.getElementById('af-name')?.value       ?? this._formState.name,
-      value:      sr.getElementById('af-value')?.value      ?? this._formState.value,
-      recurrence: sr.getElementById('af-recur')?.value      ?? this._formState.recurrence,
-      occurrences:sr.getElementById('af-occ')?.value        ?? this._formState.occurrences,
-      assignMode: sr.getElementById('af-assign')?.value     ?? this._formState.assignMode,
-    };
   }
 
   async _callService(service, data) {
@@ -296,7 +377,7 @@ class HapmPanelCard extends HTMLElement {
   _renderTopbar() {
     return `
       <div class="topbar">
-        <div class="topbar-title"><span class="topbar-icon">🐷</span> Pocket Money</div>
+        <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
         <button class="btn-holiday ${this._holidayMode ? 'active' : ''}" data-action="toggle-holiday">
           🏖 ${this._holidayMode ? 'Holiday Active' : 'Holiday Mode'}
         </button>
@@ -353,7 +434,6 @@ class HapmPanelCard extends HTMLElement {
   _renderChores(child) {
     if (!child) return '<div class="empty"><div class="empty-icon">👶</div>No children configured yet.<br>Add a child in Settings → Integrations → HAPM.</div>';
     const chores = child.dueChores || [];
-    const addForm = this._showAddForm ? this._renderAddForm() : '';
     const paySection = child.balance > 0 ? `
       <button class="btn-pay" data-action="open-pay">
         💸 Pay ${esc(child.childName)} — ${fmtMoney(child.balance, child.currency)}
@@ -364,11 +444,9 @@ class HapmPanelCard extends HTMLElement {
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <strong style="font-size:13px">Due Chores</strong>
-        <button class="btn btn-ghost" data-action="toggle-add-form">
-          ${this._showAddForm ? '✕ Cancel' : '+ Add Chore'}
-        </button>
+        <button class="btn btn-ghost" data-action="open-add-form">+ Add Chore</button>
       </div>
-      ${addForm}${choreCards}${paySection}`;
+      ${choreCards}${paySection}`;
   }
 
   _renderChoreCard(c, child) {
@@ -403,53 +481,6 @@ class HapmPanelCard extends HTMLElement {
     </div>`;
   }
 
-  _renderAddForm() {
-    // Restore previously entered values so re-renders don't wipe the form
-    const f = this._formState;
-    return `
-    <div class="add-form">
-      <div class="form-row full"><div class="form-group">
-        <label class="form-label">Chore Name</label>
-        <input class="form-input" id="af-name" type="text" placeholder="e.g. Tidy bedroom"
-          value="${esc(f.name)}" autocomplete="off" autocorrect="off" spellcheck="false">
-      </div></div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Value (${CURRENCY_DEFAULT})</label>
-          <input class="form-input" id="af-value" type="number" inputmode="decimal"
-            min="0.01" step="0.01" placeholder="0.50" value="${esc(f.value)}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Recurrence</label>
-          <select class="form-select" id="af-recur">
-            <option value="manual"  ${f.recurrence==='manual'  ?'selected':''}>Manual</option>
-            <option value="daily"   ${f.recurrence==='daily'   ?'selected':''}>Daily</option>
-            <option value="weekly"  ${f.recurrence==='weekly'  ?'selected':''}>Weekly</option>
-            <option value="monthly" ${f.recurrence==='monthly' ?'selected':''}>Monthly</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label class="form-label">Occurrences</label>
-          <input class="form-input" id="af-occ" type="number" inputmode="numeric"
-            min="1" value="${esc(f.occurrences)}">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Assignment</label>
-          <select class="form-select" id="af-assign">
-            <option value="individual" ${f.assignMode==='individual'?'selected':''}>Individual</option>
-            <option value="team"       ${f.assignMode==='team'      ?'selected':''}>Team</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-ghost" data-action="toggle-add-form">Cancel</button>
-        <button class="btn btn-primary" data-action="submit-add-chore">Add Chore</button>
-      </div>
-    </div>`;
-  }
-
   _renderLedger() {
     return `
       <div style="margin-bottom:10px"><strong style="font-size:13px">Payment Ledger</strong></div>
@@ -472,36 +503,27 @@ class HapmPanelCard extends HTMLElement {
     const el = e.currentTarget;
     const action = el.dataset.action;
     switch (action) {
-      case 'set-child': this._activeChildId = el.dataset.child; this._render(); break;
-      case 'nav': this._view = el.dataset.view; this._render(); break;
-      case 'toggle-add-form':
-        if (this._showAddForm) {
-          // Closing — reset form state
-          this._formState = { name: '', value: '', recurrence: 'weekly', occurrences: '1', assignMode: 'individual' };
-        }
-        this._showAddForm = !this._showAddForm;
+      case 'set-child':
+        this._activeChildId = el.dataset.child;
         this._render();
         break;
-      case 'submit-add-chore': {
-        // Always read directly from DOM at submit time
-        const sr = this.shadowRoot;
-        const name = sr.getElementById('af-name')?.value?.trim();
-        const value = parseFloat(sr.getElementById('af-value')?.value);
-        const recurrence = sr.getElementById('af-recur')?.value;
-        const occurrences = parseInt(sr.getElementById('af-occ')?.value) || 1;
-        const assignMode = sr.getElementById('af-assign')?.value;
-        if (!name || !value) return;
-        this._callService('add_chore', {
-          name, value, recurrence, occurrences_required: occurrences,
-          assignment_mode: assignMode,
-          assigned_to: assignMode === 'team'
-            ? this._children.map(c => c.childEntryId)
-            : [this._activeChildId],
-        });
-        this._formState = { name: '', value: '', recurrence: 'weekly', occurrences: '1', assignMode: 'individual' };
-        this._showAddForm = false;
+      case 'nav':
+        this._view = el.dataset.view;
+        this._render();
         break;
-      }
+      case 'open-add-form':
+        _openModal(({ name, value, recur, occ, assign }) => {
+          this._callService('add_chore', {
+            name, value,
+            recurrence: recur,
+            occurrences_required: occ,
+            assignment_mode: assign,
+            assigned_to: assign === 'team'
+              ? this._children.map(c => c.childEntryId)
+              : [this._activeChildId],
+          });
+        });
+        break;
       case 'complete':
         this._callService('complete_chore', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
         el.closest('.chore-card')?.classList.add('completing');
@@ -514,8 +536,10 @@ class HapmPanelCard extends HTMLElement {
         break;
       case 'toggle-holiday':
         this._holidayMode = !this._holidayMode;
-        this._callService(this._holidayMode ? 'set_holiday_mode' : 'clear_holiday_mode',
-          this._holidayMode ? { days: 14 } : {});
+        this._callService(
+          this._holidayMode ? 'set_holiday_mode' : 'clear_holiday_mode',
+          this._holidayMode ? { days: 14 } : {}
+        );
         this._render();
         break;
       case 'open-pay': {
