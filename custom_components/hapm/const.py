@@ -11,6 +11,13 @@ CONF_CURRENCY_SYMBOL = "currency_symbol"
 # Shared hass.data keys
 DATA_STORE = "store"
 
+# Storage
+STORAGE_VERSION = 1
+STORAGE_KEY_CHORES = f"{DOMAIN}_chores"
+STORAGE_KEY_LEDGER = f"{DOMAIN}_ledger"
+STORAGE_KEY_OCCURRENCES = f"{DOMAIN}_occurrences"
+STORAGE_KEY_GLOBAL = f"{DOMAIN}_global"
+
 # Recurrence types
 RECURRENCE_DAILY = "daily"
 RECURRENCE_WEEKLY = "weekly"
