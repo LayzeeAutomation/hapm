@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
-from datetime import timedelta
 
 from .const import (
     CONF_AVATAR_COLOUR,
@@ -34,7 +33,7 @@ async def async_setup_entry(
     """Set up HAPM sensors for a child config entry."""
     store: HAPMStore = hass.data[DOMAIN][DATA_STORE]
     child_name = entry.data[CONF_CHILD_NAME]
-    currency = entry.data.get(CONF_CURRENCY_SYMBOL, "£")
+    currency = entry.data.get(CONF_CURRENCY_SYMBOL, "\u00a3")
     colour = entry.data.get(CONF_AVATAR_COLOUR, "teal")
 
     balance_sensor = HAPMBalanceSensor(
@@ -72,7 +71,7 @@ class HAPMBalanceSensor(SensorEntity):
         self._attr_name = f"{child_name} Pocket Money Balance"
         self._attr_native_unit_of_measurement = currency
         self._attr_icon = "mdi:piggy-bank"
-        self._unsub: callable | None = None
+        self._unsub = None
 
     async def async_added_to_hass(self) -> None:
         self._unsub = async_track_time_interval(
@@ -93,15 +92,14 @@ class HAPMBalanceSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        ledger = self._store.get_ledger(self._child_entry_id)
+        # Use correct method name: get_ledger_for_child
+        ledger = self._store.get_ledger_for_child(self._child_entry_id)
         last_payment = next(
-            (
-                e for e in reversed(ledger)
-                if e.event_type == "payment_made"
-            ),
+            (e for e in reversed(ledger) if e.event_type == "payment_made"),
             None,
         )
         return {
+            "entry_id": self._child_entry_id,
             "child_name": self._child_name,
             "avatar_colour": self._colour,
             "currency": self._currency,
@@ -133,7 +131,7 @@ class HAPMChoresDueSensor(SensorEntity):
         self._attr_name = f"{child_name} Chores Due"
         self._attr_native_unit_of_measurement = "chores"
         self._attr_icon = "mdi:checkbox-marked-circle-outline"
-        self._unsub: callable | None = None
+        self._unsub = None
 
     async def async_added_to_hass(self) -> None:
         self._unsub = async_track_time_interval(
@@ -151,12 +149,12 @@ class HAPMChoresDueSensor(SensorEntity):
     def _get_due_chores(self) -> list:
         now = datetime.utcnow()
         due = []
-        for chore in self._store.get_all_chores():
+        # Use correct method name: get_chores
+        for chore in self._store.get_chores():
             if self._child_entry_id not in chore.assigned_to:
                 continue
             if not self._store.is_chore_active(chore):
                 continue
-            # Manual chores are always listed; scheduled chores only when due
             if chore.recurrence != RECURRENCE_MANUAL:
                 if chore.next_due is None or chore.next_due > now:
                     continue
@@ -171,6 +169,7 @@ class HAPMChoresDueSensor(SensorEntity):
     def extra_state_attributes(self) -> dict:
         due_chores = self._get_due_chores()
         return {
+            "entry_id": self._child_entry_id,
             "child_name": self._child_name,
             "avatar_colour": self._colour,
             "due_chores": [
