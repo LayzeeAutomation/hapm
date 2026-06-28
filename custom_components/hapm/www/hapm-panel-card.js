@@ -7,7 +7,7 @@
  *   type: custom:hapm-panel-card
  */
 
-const HAPM_VERSION = '0.1.0';
+const HAPM_VERSION = '0.1.1';
 const CURRENCY_DEFAULT = '£';
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ const STYLES = `
     letter-spacing: 0.06em; color: var(--secondary-text-color); }
   .form-input, .form-select { background: var(--card-background-color, #fff);
     border: 1.5px solid var(--divider-color); border-radius: 8px;
-    padding: 7px 10px; font-size: 13px; color: var(--primary-text-color);
+    padding: 7px 10px; font-size: 16px; color: var(--primary-text-color);
     font-family: inherit; transition: border-color 150ms; width: 100%; }
   .form-input:focus, .form-select:focus {
     outline: none; border-color: var(--primary-color); }
@@ -203,6 +203,8 @@ class HapmPanelCard extends HTMLElement {
     this._showAddForm = false;
     this._holidayMode = false;
     this._children = [];
+    // Persisted form state — survives hass re-renders while form is open
+    this._formState = { name: '', value: '', recurrence: 'weekly', occurrences: '1', assignMode: 'individual' };
   }
 
   setConfig(config) {
@@ -212,6 +214,10 @@ class HapmPanelCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._syncFromHass();
+    // ── iOS fix: never re-render while the add form is open.
+    // Keyboard / dropdown focus triggers hass updates; destroying the DOM
+    // dismisses the keyboard and resets dropdowns instantly on iOS Safari.
+    if (this._showAddForm) return;
     this._render();
   }
 
@@ -241,6 +247,18 @@ class HapmPanelCard extends HTMLElement {
         this._activeChildId = children[0].childEntryId;
       }
     }
+  }
+
+  // Snapshot current form field values into _formState before any re-render
+  _saveFormState() {
+    const sr = this.shadowRoot;
+    this._formState = {
+      name:       sr.getElementById('af-name')?.value       ?? this._formState.name,
+      value:      sr.getElementById('af-value')?.value      ?? this._formState.value,
+      recurrence: sr.getElementById('af-recur')?.value      ?? this._formState.recurrence,
+      occurrences:sr.getElementById('af-occ')?.value        ?? this._formState.occurrences,
+      assignMode: sr.getElementById('af-assign')?.value     ?? this._formState.assignMode,
+    };
   }
 
   async _callService(service, data) {
@@ -386,37 +404,42 @@ class HapmPanelCard extends HTMLElement {
   }
 
   _renderAddForm() {
+    // Restore previously entered values so re-renders don't wipe the form
+    const f = this._formState;
     return `
     <div class="add-form">
       <div class="form-row full"><div class="form-group">
         <label class="form-label">Chore Name</label>
-        <input class="form-input" id="af-name" type="text" placeholder="e.g. Tidy bedroom">
+        <input class="form-input" id="af-name" type="text" placeholder="e.g. Tidy bedroom"
+          value="${esc(f.name)}" autocomplete="off" autocorrect="off" spellcheck="false">
       </div></div>
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label">Value (£)</label>
-          <input class="form-input" id="af-value" type="number" min="0.01" step="0.01" placeholder="0.50">
+          <label class="form-label">Value (${CURRENCY_DEFAULT})</label>
+          <input class="form-input" id="af-value" type="number" inputmode="decimal"
+            min="0.01" step="0.01" placeholder="0.50" value="${esc(f.value)}">
         </div>
         <div class="form-group">
           <label class="form-label">Recurrence</label>
           <select class="form-select" id="af-recur">
-            <option value="manual">Manual</option>
-            <option value="daily">Daily</option>
-            <option value="weekly" selected>Weekly</option>
-            <option value="monthly">Monthly</option>
+            <option value="manual"  ${f.recurrence==='manual'  ?'selected':''}>Manual</option>
+            <option value="daily"   ${f.recurrence==='daily'   ?'selected':''}>Daily</option>
+            <option value="weekly"  ${f.recurrence==='weekly'  ?'selected':''}>Weekly</option>
+            <option value="monthly" ${f.recurrence==='monthly' ?'selected':''}>Monthly</option>
           </select>
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Occurrences</label>
-          <input class="form-input" id="af-occ" type="number" min="1" value="1">
+          <input class="form-input" id="af-occ" type="number" inputmode="numeric"
+            min="1" value="${esc(f.occurrences)}">
         </div>
         <div class="form-group">
           <label class="form-label">Assignment</label>
           <select class="form-select" id="af-assign">
-            <option value="individual">Individual</option>
-            <option value="team">Team</option>
+            <option value="individual" ${f.assignMode==='individual'?'selected':''}>Individual</option>
+            <option value="team"       ${f.assignMode==='team'      ?'selected':''}>Team</option>
           </select>
         </div>
       </div>
@@ -451,8 +474,16 @@ class HapmPanelCard extends HTMLElement {
     switch (action) {
       case 'set-child': this._activeChildId = el.dataset.child; this._render(); break;
       case 'nav': this._view = el.dataset.view; this._render(); break;
-      case 'toggle-add-form': this._showAddForm = !this._showAddForm; this._render(); break;
+      case 'toggle-add-form':
+        if (this._showAddForm) {
+          // Closing — reset form state
+          this._formState = { name: '', value: '', recurrence: 'weekly', occurrences: '1', assignMode: 'individual' };
+        }
+        this._showAddForm = !this._showAddForm;
+        this._render();
+        break;
       case 'submit-add-chore': {
+        // Always read directly from DOM at submit time
         const sr = this.shadowRoot;
         const name = sr.getElementById('af-name')?.value?.trim();
         const value = parseFloat(sr.getElementById('af-value')?.value);
@@ -467,6 +498,7 @@ class HapmPanelCard extends HTMLElement {
             ? this._children.map(c => c.childEntryId)
             : [this._activeChildId],
         });
+        this._formState = { name: '', value: '', recurrence: 'weekly', occurrences: '1', assignMode: 'individual' };
         this._showAddForm = false;
         break;
       }
