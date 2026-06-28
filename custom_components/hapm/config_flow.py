@@ -22,7 +22,7 @@ class HAPMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.ConfigFlowResult:
+    ) -> config_entries.FlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -74,12 +74,9 @@ class HAPMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class HAPMOptionsFlow(config_entries.OptionsFlow):
     """Handle HAPM options (edit child settings)."""
 
-    # Do NOT override __init__ or store config_entry manually.
-    # HA injects it as self.config_entry via the base class.
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.OptionsFlowResult:
+    ) -> config_entries.FlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
