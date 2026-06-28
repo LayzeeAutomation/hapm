@@ -180,13 +180,26 @@ class HAPMChoresDueSensor(SensorEntity):
             due.append(chore)
         return due
 
+    def _get_paused_chores(self) -> list:
+        """Return all chores assigned to this child that are currently paused."""
+        paused = []
+        for chore in self._store.get_chores():
+            if self._child_entry_id not in chore.assigned_to:
+                continue
+            if not chore.enabled:
+                continue
+            if self._store.is_paused(chore):
+                paused.append(chore)
+        return paused
+
     @property
     def native_value(self) -> int:
         return len(self._get_due_chores())
 
     @property
     def extra_state_attributes(self) -> dict:
-        due_chores = self._get_due_chores()
+        due_chores    = self._get_due_chores()
+        paused_chores = self._get_paused_chores()
         return {
             "entry_id": self._child_entry_id,
             "child_name": self._child_name,
@@ -202,5 +215,18 @@ class HAPMChoresDueSensor(SensorEntity):
                     "description": c.description,
                 }
                 for c in due_chores
+            ],
+            "paused_chores": [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "value": c.value,
+                    "recurrence": c.recurrence,
+                    "occurrences_required": c.occurrences_required,
+                    "description": c.description,
+                    # ISO string so the card can parse it; year-9999 = indefinite
+                    "paused_until": c.paused_until.isoformat() if c.paused_until else None,
+                }
+                for c in paused_chores
             ],
         }
