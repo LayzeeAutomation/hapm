@@ -17,8 +17,17 @@ from .store import HAPMStore
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up HAPM integration."""
+    """Set up HAPM integration.
+
+    This runs on every HA start as soon as the integration is loaded,
+    before any config entries are set up. Registering the Lovelace resource
+    here ensures it is always present — even on a fresh install before any
+    child has been added via the config flow.
+    """
     hass.data.setdefault(DOMAIN, {})
+    # Register the Lovelace card resource unconditionally at integration load.
+    # With 'lovelace' in after_dependencies, the resource collection is ready.
+    await async_register_frontend(hass)
     return True
 
 
@@ -36,12 +45,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         unsub = async_setup_scheduler(hass)
         hass.data[DOMAIN][DATA_SCHEDULER_UNSUB] = unsub
-
-    # Always register / re-register the Lovelace card resource on every startup.
-    # This ensures the versioned URL is present even after a cache-bust version bump
-    # or if the previous registration was lost. The function is idempotent — it
-    # removes any stale entries and only creates a new one when needed.
-    await async_register_frontend(hass)
 
     hass.data[DOMAIN][entry.entry_id] = {}
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
