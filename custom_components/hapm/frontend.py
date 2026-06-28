@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 _LOGGER = logging.getLogger(__name__)
 
 # Bump this every time hapm-panel-card.js changes.
-CARD_VERSION = "0.1.2"
+CARD_VERSION = "0.1.3"
 CARD_BASE_URL = "/hapm_static/hapm-panel-card.js"
 CARD_URL = f"{CARD_BASE_URL}?v={CARD_VERSION}"
 WWW_DIR = pathlib.Path(__file__).parent / "www"
