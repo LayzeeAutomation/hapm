@@ -1,93 +1,69 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.5
- * A self-contained Lovelace custom card for the HAPM integration.
- *
- * Usage in Lovelace:
- *   type: custom:hapm-panel-card
- *
- * iOS fix: the "Add Chore" form is rendered as a document.body modal overlay
- * so it is completely outside the shadow-DOM re-render cycle.
+ * HAPM Pocket Money Panel Card  v0.1.8
  */
 
-const HAPM_VERSION = '0.1.5';
+const HAPM_VERSION = '0.1.8';
 const CURRENCY_DEFAULT = '£';
-const OPTIMISTIC_TTL_MS = 15000; // keep optimistic chores for 15s max
+const OPTIMISTIC_TTL_MS = 15000;
 
-// ── Styles ────────────────────────────────────────────────────────────────────
 const STYLES = `
   :host { display: block; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
   .hapm { font-family: var(--primary-font-family, 'DM Sans', sans-serif);
     font-size: 14px; color: var(--primary-text-color);
     background: var(--ha-card-background, var(--card-background-color));
-    border-radius: var(--ha-card-border-radius, 12px);
-    overflow: hidden; }
-
+    border-radius: var(--ha-card-border-radius, 12px); overflow: hidden; }
   .child-tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 16px 16px 0; }
-  .child-tab { display: flex; align-items: center; gap: 6px;
-    padding: 6px 14px; border-radius: 9999px;
-    border: 1.5px solid var(--divider-color);
+  .child-tab { display: flex; align-items: center; gap: 6px; padding: 6px 14px;
+    border-radius: 9999px; border: 1.5px solid var(--divider-color);
     cursor: pointer; font-size: 13px; font-weight: 500;
     background: none; color: var(--primary-text-color); transition: all 150ms ease; }
   .child-tab:hover { border-color: var(--primary-color); color: var(--primary-color); }
   .child-tab.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
   .dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
-
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 12px; padding: 14px 16px; }
   .kpi { background: var(--secondary-background-color); border-radius: 10px; padding: 12px 14px; }
   .kpi-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--secondary-text-color); margin-bottom: 4px; }
-  .kpi-value { font-size: 22px; font-weight: 700; line-height: 1;
-    font-variant-numeric: tabular-nums lining-nums; }
+  .kpi-value { font-size: 22px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums lining-nums; }
   .kpi-value.positive { color: var(--success-color, #6daa45); }
   .kpi-sub { font-size: 11px; color: var(--secondary-text-color); margin-top: 3px; }
-
-  .nav { display: flex; gap: 4px; padding: 0 16px;
-    border-bottom: 1px solid var(--divider-color); }
-  .nav-btn { padding: 10px 14px; font-size: 13px; font-weight: 500;
-    background: none; border: none; border-bottom: 2px solid transparent;
-    color: var(--secondary-text-color); cursor: pointer; transition: all 150ms ease;
-    margin-bottom: -1px; }
+  .nav { display: flex; gap: 4px; padding: 0 16px; border-bottom: 1px solid var(--divider-color); }
+  .nav-btn { padding: 10px 14px; font-size: 13px; font-weight: 500; background: none; border: none;
+    border-bottom: 2px solid transparent; color: var(--secondary-text-color); cursor: pointer;
+    transition: all 150ms ease; margin-bottom: -1px; }
   .nav-btn:hover { color: var(--primary-text-color); }
   .nav-btn.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
   .badge { display: inline-flex; align-items: center; justify-content: center;
-    background: var(--primary-color); color: #fff;
-    border-radius: 9999px; font-size: 10px; font-weight: 700;
-    padding: 1px 6px; margin-left: 4px; }
-
+    background: var(--primary-color); color: #fff; border-radius: 9999px;
+    font-size: 10px; font-weight: 700; padding: 1px 6px; margin-left: 4px; }
   .panel { padding: 14px 16px; }
-
-  .chore-card { background: var(--secondary-background-color);
-    border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
-    display: grid; grid-template-columns: 1fr auto; gap: 8px;
-    align-items: start; transition: opacity 300ms ease; }
+  .chore-card { background: var(--secondary-background-color); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 10px; display: grid;
+    grid-template-columns: 1fr auto; gap: 8px; align-items: start; transition: opacity 300ms ease; }
   .chore-card.completing { opacity: 0.35; pointer-events: none; }
   .chore-card.optimistic { opacity: 0.6; }
   .chore-top { display: flex; align-items: flex-start; gap: 10px; }
-  .chore-icon { width: 34px; height: 34px; border-radius: 8px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 18px; background: var(--card-background-color, #fff); flex-shrink: 0; }
+  .chore-icon { width: 34px; height: 34px; border-radius: 8px; display: flex;
+    align-items: center; justify-content: center; font-size: 18px;
+    background: var(--card-background-color, #fff); flex-shrink: 0; }
   .chore-name { font-weight: 600; font-size: 13px; line-height: 1.3; }
   .chore-desc { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; }
   .chore-meta { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
-  .pill { display: inline-flex; align-items: center; padding: 2px 7px;
-    border-radius: 9999px; font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.03em; }
-  .pill-due    { background: rgba(109,170,69,0.15); color: var(--success-color,#6daa45); }
-  .pill-multi  { background: rgba(124,99,209,0.15); color: #7c63d1; }
-  .pill-recur  { background: rgba(85,145,199,0.15);  color: #5591c7; }
+  .pill { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 9999px;
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+  .pill-due { background: rgba(109,170,69,0.15); color: var(--success-color,#6daa45); }
+  .pill-multi { background: rgba(124,99,209,0.15); color: #7c63d1; }
+  .pill-recur { background: rgba(85,145,199,0.15); color: #5591c7; }
   .occ-track { display: flex; gap: 4px; margin-top: 6px; }
   .occ-dot { width: 9px; height: 9px; border-radius: 9999px;
     background: var(--divider-color); border: 1.5px solid var(--secondary-text-color); }
   .chore-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
   .chore-value { font-weight: 700; font-size: 15px; color: var(--success-color, #6daa45);
     font-variant-numeric: tabular-nums; white-space: nowrap; }
-
-  .btn { display: inline-flex; align-items: center; gap: 5px;
-    padding: 5px 12px; border-radius: 8px; font-size: 12px;
-    font-weight: 600; cursor: pointer; border: none;
+  .btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px;
+    border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none;
     font-family: inherit; transition: all 150ms ease; }
   .btn-primary { background: var(--primary-color); color: #fff; }
   .btn-primary:hover { filter: brightness(1.1); }
@@ -95,76 +71,53 @@ const STYLES = `
     color: var(--secondary-text-color); }
   .btn-ghost:hover { border-color: var(--primary-color); color: var(--primary-color); }
   .btn-pay { width: 100%; padding: 10px; font-size: 14px; margin-top: 8px;
-    background: var(--success-color, #6daa45); color: #fff;
-    border: none; border-radius: 10px; font-family: inherit;
-    font-weight: 700; cursor: pointer; }
-  .btn-holiday { display: flex; align-items: center; gap: 6px;
-    padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600;
-    cursor: pointer; border: none; font-family: inherit;
-    background: rgba(232,175,52,0.15); color: #c9920a; }
+    background: var(--success-color, #6daa45); color: #fff; border: none;
+    border-radius: 10px; font-family: inherit; font-weight: 700; cursor: pointer; }
+  .btn-holiday { display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+    border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none;
+    font-family: inherit; background: rgba(232,175,52,0.15); color: #c9920a; }
   .btn-holiday.active { background: #c9920a; color: #fff; }
-
   .topbar { display: flex; align-items: center; justify-content: space-between;
     padding: 12px 16px; border-bottom: 1px solid var(--divider-color); }
   .topbar-title { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
-
-  .empty { text-align: center; padding: 32px 16px;
-    color: var(--secondary-text-color); font-size: 13px; }
+  .empty { text-align: center; padding: 32px 16px; color: var(--secondary-text-color); font-size: 13px; }
   .empty-icon { font-size: 32px; margin-bottom: 8px; }
 `;
 
-// Modal styles — injected into document.head once, lives outside shadow DOM
 const MODAL_STYLES = `
-  .hapm-modal-backdrop {
-    position: fixed; inset: 0; z-index: 9999;
-    background: rgba(0,0,0,0.55);
+  .hapm-modal-backdrop { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,0.55);
     display: flex; align-items: flex-end; justify-content: center;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
+    padding-bottom: env(safe-area-inset-bottom, 0px); }
   .hapm-modal-backdrop.hidden { display: none; }
-  .hapm-modal-sheet {
-    background: #fff; width: 100%; max-width: 520px;
+  .hapm-modal-sheet { background: #fff; width: 100%; max-width: 520px;
     border-radius: 20px 20px 0 0;
     padding: 20px 20px calc(20px + env(safe-area-inset-bottom, 0px));
     box-shadow: 0 -4px 32px rgba(0,0,0,0.18);
-    font-family: -apple-system, 'DM Sans', sans-serif;
-    font-size: 14px; color: #111;
-  }
+    font-family: -apple-system, 'DM Sans', sans-serif; font-size: 14px; color: #111; }
   @media (prefers-color-scheme: dark) {
     .hapm-modal-sheet { background: #1c1c1e; color: #f2f2f7; }
-    .hapm-modal-input, .hapm-modal-select {
-      background: #2c2c2e !important; color: #f2f2f7 !important;
-      border-color: #3a3a3c !important;
-    }
+    .hapm-modal-input, .hapm-modal-select { background: #2c2c2e !important; color: #f2f2f7 !important; border-color: #3a3a3c !important; }
     .hapm-child-checkbox-row { border-color: #3a3a3c !important; }
     .hapm-modal-btn-cancel { background: #2c2c2e !important; color: #f2f2f7 !important; }
   }
-  .hapm-modal-handle { width: 36px; height: 4px; border-radius: 2px;
-    background: #ccc; margin: 0 auto 16px; }
+  .hapm-modal-handle { width: 36px; height: 4px; border-radius: 2px; background: #ccc; margin: 0 auto 16px; }
   .hapm-modal-title { font-weight: 700; font-size: 17px; margin-bottom: 16px; }
   .hapm-modal-label { font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.06em; color: #888; margin-bottom: 6px; display: block; }
-  .hapm-modal-input, .hapm-modal-select {
-    width: 100%; padding: 10px 12px; font-size: 16px;
-    border: 1.5px solid #ddd; border-radius: 10px;
-    font-family: inherit; background: #f9f9f9; color: #111;
-    box-sizing: border-box; margin-bottom: 12px;
-    -webkit-appearance: none; appearance: none;
-  }
-  .hapm-modal-input:focus, .hapm-modal-select:focus {
-    outline: none; border-color: #01696f;
-  }
+  .hapm-modal-input, .hapm-modal-select { width: 100%; padding: 10px 12px; font-size: 16px;
+    border: 1.5px solid #ddd; border-radius: 10px; font-family: inherit;
+    background: #f9f9f9; color: #111; box-sizing: border-box; margin-bottom: 12px;
+    -webkit-appearance: none; appearance: none; }
+  .hapm-modal-input:focus, .hapm-modal-select:focus { outline: none; border-color: #01696f; }
   .hapm-modal-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .hapm-modal-row .hapm-modal-input,
-  .hapm-modal-row .hapm-modal-select { margin-bottom: 0; }
+  .hapm-modal-row .hapm-modal-input, .hapm-modal-row .hapm-modal-select { margin-bottom: 0; }
   .hapm-modal-row-wrap { margin-bottom: 12px; }
   .hapm-children-list { display: flex; flex-direction: column; gap: 0;
     border: 1.5px solid #ddd; border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
   .hapm-child-checkbox-row { display: flex; align-items: center; gap: 10px;
     padding: 11px 14px; cursor: pointer; border-bottom: 1px solid #eee; }
   .hapm-child-checkbox-row:last-child { border-bottom: none; }
-  .hapm-child-checkbox-row input[type=checkbox] {
-    width: 18px; height: 18px; accent-color: #01696f;
+  .hapm-child-checkbox-row input[type=checkbox] { width: 18px; height: 18px; accent-color: #01696f;
     flex-shrink: 0; cursor: pointer; margin: 0; }
   .hapm-child-checkbox-label { font-size: 15px; font-weight: 500; flex: 1; cursor: pointer; }
   .hapm-child-dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
@@ -173,9 +126,10 @@ const MODAL_STYLES = `
     font-weight: 700; cursor: pointer; border: none; font-family: inherit; }
   .hapm-modal-btn-cancel { background: #f0f0f0; color: #333; }
   .hapm-modal-btn-submit { background: #01696f; color: #fff; }
+  .hapm-occ-window-row { display: none; margin-bottom: 12px; }
+  .hapm-occ-window-row.visible { display: block; }
 `;
 
-// ── Colour / icon maps ────────────────────────────────────────────────────────
 const COLOUR_MAP = {
   teal: '#01696f', blue: '#5591c7', purple: '#7c63d1',
   orange: '#fdab43', gold: '#e8af34', green: '#6daa45',
@@ -183,7 +137,6 @@ const COLOUR_MAP = {
 };
 const CHORE_ICONS = ['🧹','🛏️','🍽️','🐶','🌿','🧺','🚿','📚','🗑️','🧽'];
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtMoney(v, sym = CURRENCY_DEFAULT) { return sym + Math.abs(v).toFixed(2); }
 function fmtDate(iso) {
   const d = new Date(iso), now = new Date(), diff = now - d;
@@ -195,8 +148,11 @@ function fmtDate(iso) {
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+function daysRemaining(isoUntil) {
+  const diff = new Date(isoUntil) - new Date();
+  return Math.max(0, Math.ceil(diff / 86400000));
+}
 
-// Inject modal styles into document head once
 if (!document.getElementById('hapm-modal-styles')) {
   const st = document.createElement('style');
   st.id = 'hapm-modal-styles';
@@ -204,7 +160,46 @@ if (!document.getElementById('hapm-modal-styles')) {
   document.head.appendChild(st);
 }
 
-// ── Modal singleton ───────────────────────────────────────────────────────────
+// ── Holiday modal ─────────────────────────────────────────────────────────────
+let _holidayModal = null;
+let _holidayCallback = null;
+
+function _buildHolidayModal() {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'hapm-modal-backdrop hidden';
+  backdrop.id = 'hapm-holiday-modal';
+  backdrop.innerHTML = `
+    <div class="hapm-modal-sheet">
+      <div class="hapm-modal-handle"></div>
+      <div class="hapm-modal-title">🏖 Holiday Mode</div>
+      <label class="hapm-modal-label">How many days are you away?</label>
+      <input class="hapm-modal-input" id="hm-holiday-days" type="number"
+        inputmode="numeric" min="1" max="365" value="7">
+      <div class="hapm-modal-actions">
+        <button class="hapm-modal-btn hapm-modal-btn-cancel" id="hm-holiday-cancel">Cancel</button>
+        <button class="hapm-modal-btn hapm-modal-btn-submit" id="hm-holiday-submit">Start Holiday</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) _closeHolidayModal(); });
+  document.getElementById('hm-holiday-cancel').addEventListener('click', _closeHolidayModal);
+  document.getElementById('hm-holiday-submit').addEventListener('click', () => {
+    const days = parseInt(document.getElementById('hm-holiday-days').value) || 7;
+    if (_holidayCallback) _holidayCallback(days);
+    _closeHolidayModal();
+  });
+  return backdrop;
+}
+function _getHolidayModal() { if (!_holidayModal) _holidayModal = _buildHolidayModal(); return _holidayModal; }
+function _openHolidayModal(cb) {
+  document.getElementById('hm-holiday-days').value = '7';
+  _holidayCallback = cb;
+  _getHolidayModal().classList.remove('hidden');
+  setTimeout(() => document.getElementById('hm-holiday-days').focus(), 80);
+}
+function _closeHolidayModal() { _getHolidayModal().classList.add('hidden'); _holidayCallback = null; }
+
+// ── Add-chore modal ───────────────────────────────────────────────────────────
 let _hapmModal = null;
 let _hapmModalCallback = null;
 
@@ -216,15 +211,13 @@ function _buildModal() {
     <div class="hapm-modal-sheet" id="hapm-modal-sheet">
       <div class="hapm-modal-handle"></div>
       <div class="hapm-modal-title">➕ Add Chore</div>
-
       <label class="hapm-modal-label">Chore Name</label>
       <input class="hapm-modal-input" id="hm-name" type="text"
         placeholder="e.g. Tidy bedroom"
         autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false">
-
       <div class="hapm-modal-row hapm-modal-row-wrap">
         <div>
-          <label class="hapm-modal-label">Value (${CURRENCY_DEFAULT})</label>
+          <label class="hapm-modal-label">Value (£)</label>
           <input class="hapm-modal-input" id="hm-value" type="number"
             inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
         </div>
@@ -238,42 +231,47 @@ function _buildModal() {
           </select>
         </div>
       </div>
-
-      <label class="hapm-modal-label">Occurrences</label>
+      <label class="hapm-modal-label">Occurrences needed</label>
       <input class="hapm-modal-input" id="hm-occ" type="number"
         inputmode="numeric" min="1" value="1">
-
+      <div class="hapm-occ-window-row" id="hm-window-row">
+        <label class="hapm-modal-label">Completion window (days)</label>
+        <input class="hapm-modal-input" id="hm-window" type="number"
+          inputmode="numeric" min="1" placeholder="e.g. 7">
+      </div>
       <label class="hapm-modal-label">Assign To</label>
       <div class="hapm-children-list" id="hm-children-list"></div>
-
       <div class="hapm-modal-actions">
         <button class="hapm-modal-btn hapm-modal-btn-cancel" id="hm-cancel">Cancel</button>
         <button class="hapm-modal-btn hapm-modal-btn-submit" id="hm-submit">Add Chore</button>
       </div>
-    </div>
-  `;
+    </div>`;
   document.body.appendChild(backdrop);
   backdrop.addEventListener('click', e => { if (e.target === backdrop) _closeModal(); });
   document.getElementById('hm-cancel').addEventListener('click', _closeModal);
   document.getElementById('hm-submit').addEventListener('click', _submitModal);
+  // Show/hide window field based on occurrences
+  document.getElementById('hm-occ').addEventListener('input', () => {
+    const occ = parseInt(document.getElementById('hm-occ').value) || 1;
+    document.getElementById('hm-window-row').classList.toggle('visible', occ > 1);
+    if (occ > 1) document.getElementById('hm-window').value = occ * 7;
+  });
   return backdrop;
 }
 
-function _getModal() {
-  if (!_hapmModal) _hapmModal = _buildModal();
-  return _hapmModal;
-}
+function _getModal() { if (!_hapmModal) _hapmModal = _buildModal(); return _hapmModal; }
 
 function _submitModal() {
   const name  = document.getElementById('hm-name').value.trim();
   const value = parseFloat(document.getElementById('hm-value').value);
   const recur = document.getElementById('hm-recur').value;
   const occ   = parseInt(document.getElementById('hm-occ').value) || 1;
+  const windowDays = occ > 1 ? (parseInt(document.getElementById('hm-window').value) || occ * 7) : null;
   const checked = [...document.querySelectorAll('#hm-children-list input[type=checkbox]:checked')];
   const assignedTo = checked.map(cb => cb.value);
   if (!name || !value) { document.getElementById('hm-name').focus(); return; }
   if (!assignedTo.length) return;
-  if (_hapmModalCallback) _hapmModalCallback({ name, value, recur, occ, assignedTo });
+  if (_hapmModalCallback) _hapmModalCallback({ name, value, recur, occ, windowDays, assignedTo });
   _closeModal();
 }
 
@@ -283,6 +281,7 @@ function _openModal(children, activeChildId, callback) {
   document.getElementById('hm-value').value = '';
   document.getElementById('hm-recur').value = 'weekly';
   document.getElementById('hm-occ').value   = '1';
+  document.getElementById('hm-window-row').classList.remove('visible');
   const list = document.getElementById('hm-children-list');
   list.innerHTML = children.map(c => `
     <label class="hapm-child-checkbox-row">
@@ -297,10 +296,7 @@ function _openModal(children, activeChildId, callback) {
   setTimeout(() => document.getElementById('hm-name').focus(), 80);
 }
 
-function _closeModal() {
-  _getModal().classList.add('hidden');
-  _hapmModalCallback = null;
-}
+function _closeModal() { _getModal().classList.add('hidden'); _hapmModalCallback = null; }
 
 // ── Custom element ────────────────────────────────────────────────────────────
 class HapmPanelCard extends HTMLElement {
@@ -311,9 +307,8 @@ class HapmPanelCard extends HTMLElement {
     this._hass = null;
     this._activeChildId = null;
     this._view = 'chores';
-    this._holidayMode = false;
+    this._holidayUntil = null; // ISO string or null
     this._children = [];
-    // { [childEntryId]: [{ ...chore, _optimistic: true, _expiresAt: timestamp }] }
     this._optimisticChores = {};
   }
 
@@ -330,13 +325,10 @@ class HapmPanelCard extends HTMLElement {
     const now = Date.now();
     const states = this._hass.states;
 
-    // ── Step 1: clean up _optimisticChores in a single pass BEFORE the child loop.
-    // This is the critical fix: we never touch _optimisticChores inside the per-child
-    // loop, so processing child A can never wipe child B's pending entries.
+    // Step 1: clean up _optimisticChores in a single pass
     for (const childId of Object.keys(this._optimisticChores)) {
       const dueSensorId = Object.keys(states).find(id =>
-        id.startsWith('sensor.') &&
-        id.endsWith('_chores_due') &&
+        id.startsWith('sensor.') && id.endsWith('_chores_due') &&
         (states[id]?.attributes?.entry_id === childId)
       );
       const serverChores = (dueSensorId ? states[dueSensorId]?.attributes?.due_chores : null) || [];
@@ -350,7 +342,7 @@ class HapmPanelCard extends HTMLElement {
       }
     }
 
-    // ── Step 2: build children array, merging server chores + any still-pending optimistic ones
+    // Step 2: build children array
     const children = [];
     for (const [entityId, state] of Object.entries(states)) {
       if (!entityId.startsWith('sensor.') || !entityId.endsWith('_pocket_money_balance')) continue;
@@ -363,11 +355,8 @@ class HapmPanelCard extends HTMLElement {
       const dueSensorId = entityId.replace('_pocket_money_balance', '_chores_due');
       const serverChores = states[dueSensorId]?.attributes?.due_chores || [];
       const lastPaid = attrs.last_paid || null;
-
-      // Merge: server chores + any still-live optimistic chores (already cleaned above)
       const optimistic = this._optimisticChores[childEntryId] || [];
       const dueChores = [...serverChores, ...optimistic];
-
       children.push({ childEntryId, childName, colour, currency, balance, dueChores, lastPaid });
     }
 
@@ -381,11 +370,8 @@ class HapmPanelCard extends HTMLElement {
 
   async _callService(service, data) {
     if (!this._hass) return;
-    try {
-      await this._hass.callService('hapm', service, data);
-    } catch (e) {
-      console.error('HAPM card service error', service, e);
-    }
+    try { await this._hass.callService('hapm', service, data); }
+    catch (e) { console.error('HAPM card service error', service, e); }
   }
 
   get _activeChild() {
@@ -405,17 +391,19 @@ class HapmPanelCard extends HTMLElement {
           ${this._view === 'chores' ? this._renderChores(child) : ''}
           ${this._view === 'ledger' ? this._renderLedger() : ''}
         </div>
-      </ha-card>
-    `;
+      </ha-card>`;
     this._bindEvents();
   }
 
   _renderTopbar() {
+    const holidayActive = this._holidayUntil && new Date(this._holidayUntil) > new Date();
+    const remaining = holidayActive ? daysRemaining(this._holidayUntil) : 0;
+    const label = holidayActive ? `🏖 Holiday — ${remaining}d left` : '🏖 Holiday Mode';
     return `
       <div class="topbar">
         <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
-        <button class="btn-holiday ${this._holidayMode ? 'active' : ''}" data-action="toggle-holiday">
-          🏖 ${this._holidayMode ? 'Holiday Active' : 'Holiday Mode'}
+        <button class="btn-holiday ${holidayActive ? 'active' : ''}" data-action="toggle-holiday">
+          ${label}
         </button>
       </div>`;
   }
@@ -549,14 +537,11 @@ class HapmPanelCard extends HTMLElement {
         this._render();
         break;
       case 'open-add-form':
-        _openModal(this._children, this._activeChildId, ({ name, value, recur, occ, assignedTo }) => {
+        _openModal(this._children, this._activeChildId, ({ name, value, recur, occ, windowDays, assignedTo }) => {
           const expiresAt = Date.now() + OPTIMISTIC_TTL_MS;
           const optimisticChore = {
-            id: '_opt_' + Date.now(),
-            name, value, recurrence: recur,
-            occurrences_required: occ,
-            _optimistic: true,
-            _expiresAt: expiresAt,
+            id: '_opt_' + Date.now(), name, value, recurrence: recur,
+            occurrences_required: occ, _optimistic: true, _expiresAt: expiresAt,
           };
           assignedTo.forEach(childId => {
             if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
@@ -564,14 +549,13 @@ class HapmPanelCard extends HTMLElement {
           });
           this._syncFromHass();
           this._render();
-
-          this._callService('add_chore', {
-            name, value,
-            recurrence: recur,
-            occurrences_required: occ,
+          const serviceData = {
+            name, value, recurrence: recur, occurrences_required: occ,
             assignment_mode: assignedTo.length === this._children.length ? 'team' : 'individual',
             assigned_to: assignedTo,
-          });
+          };
+          if (windowDays) serviceData.occurrence_window_days = windowDays;
+          this._callService('add_chore', serviceData);
         });
         break;
       case 'complete':
@@ -584,14 +568,23 @@ class HapmPanelCard extends HTMLElement {
       case 'pause':
         this._callService('pause_chore', { chore_id: el.dataset.chore, days: 7 });
         break;
-      case 'toggle-holiday':
-        this._holidayMode = !this._holidayMode;
-        this._callService(
-          this._holidayMode ? 'set_holiday_mode' : 'clear_holiday_mode',
-          this._holidayMode ? { days: 14 } : {}
-        );
-        this._render();
+      case 'toggle-holiday': {
+        const holidayActive = this._holidayUntil && new Date(this._holidayUntil) > new Date();
+        if (holidayActive) {
+          this._holidayUntil = null;
+          this._callService('clear_holiday_mode', {});
+          this._render();
+        } else {
+          _openHolidayModal(days => {
+            const until = new Date();
+            until.setDate(until.getDate() + days);
+            this._holidayUntil = until.toISOString();
+            this._callService('set_holiday_mode', { days });
+            this._render();
+          });
+        }
         break;
+      }
       case 'open-pay': {
         const child = this._activeChild;
         if (!child || child.balance <= 0) return;
@@ -608,7 +601,6 @@ class HapmPanelCard extends HTMLElement {
 }
 
 customElements.define('hapm-panel-card', HapmPanelCard);
-
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'hapm-panel-card',
@@ -617,7 +609,6 @@ window.customCards.push({
   preview: false,
   documentationURL: 'https://github.com/LayzeeAutomation/hapm',
 });
-
 console.info(
   `%c HAPM PANEL CARD %c v${HAPM_VERSION} `,
   'background:#01696f;color:#fff;padding:2px 6px;border-radius:4px 0 0 4px;font-weight:700',
