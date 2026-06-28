@@ -10,5 +10,6 @@
   "requirements": [],
   "dependencies": [],
   "after_dependencies": [],
-  "quality_scale": "custom"
+  "quality_scale": "custom",
+  "homeassistant": "2024.7.0"
 }
