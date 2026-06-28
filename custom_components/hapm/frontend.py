@@ -7,9 +7,13 @@ dashboard card picker without any manual steps.
 The resource URL includes a ?v= query string that must be bumped
 whenever the JS file changes so that browsers (especially iOS Safari
 which caches aggressively) fetch the new version.
+
+On fresh installs Lovelace may not be ready when async_setup_entry runs,
+so registration is retried up to REGISTER_RETRIES times.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 
@@ -24,6 +28,9 @@ CARD_BASE_URL = "/hapm_static/hapm-panel-card.js"
 CARD_URL = f"{CARD_BASE_URL}?v={CARD_VERSION}"
 WWW_DIR = pathlib.Path(__file__).parent / "www"
 
+REGISTER_RETRIES = 5
+REGISTER_RETRY_DELAY = 2  # seconds
+
 
 async def async_register_frontend(hass: HomeAssistant) -> None:
     """Serve the card JS and register it as a persistent Lovelace resource."""
@@ -35,11 +42,33 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
         [StaticPathConfig("/hapm_static", str(WWW_DIR), cache_headers=False)]
     )
 
-    await _ensure_lovelace_resource(hass)
+    # Try immediately, then retry in the background if Lovelace isn't ready yet.
+    registered = await _ensure_lovelace_resource(hass)
+    if not registered:
+        hass.async_create_task(_retry_registration(hass))
 
 
-async def _ensure_lovelace_resource(hass: HomeAssistant) -> None:
-    """Add (or update) the card URL in Lovelace resources."""
+async def _retry_registration(hass: HomeAssistant) -> None:
+    """Retry resource registration until Lovelace is ready (fresh install / redownload)."""
+    for attempt in range(1, REGISTER_RETRIES + 1):
+        await asyncio.sleep(REGISTER_RETRY_DELAY)
+        _LOGGER.debug("HAPM: Retrying Lovelace resource registration (attempt %d/%d)", attempt, REGISTER_RETRIES)
+        registered = await _ensure_lovelace_resource(hass)
+        if registered:
+            return
+    _LOGGER.warning(
+        "HAPM: Could not register Lovelace resource after %d attempts. "
+        "Add manually: Settings \u2192 Dashboards \u2192 Resources \u2192 %s (JavaScript Module)",
+        REGISTER_RETRIES, CARD_URL,
+    )
+
+
+async def _ensure_lovelace_resource(hass: HomeAssistant) -> bool:
+    """Add (or update) the card URL in Lovelace resources.
+
+    Returns True if the resource is confirmed registered, False if Lovelace
+    was not ready yet (caller should retry).
+    """
     try:
         from homeassistant.components.lovelace.resources import ResourceStorageCollection  # noqa: PLC0415
 
@@ -47,12 +76,8 @@ async def _ensure_lovelace_resource(hass: HomeAssistant) -> None:
         resources: ResourceStorageCollection | None = lovelace_data.get("resources")
 
         if resources is None:
-            _LOGGER.warning(
-                "HAPM: Lovelace resource collection not available. "
-                "Add manually: Settings \u2192 Dashboards \u2192 Resources \u2192 %s (JavaScript Module)",
-                CARD_URL,
-            )
-            return
+            _LOGGER.debug("HAPM: Lovelace resource collection not ready yet, will retry.")
+            return False
 
         await resources.async_load()
         items = resources.async_items()
@@ -70,16 +95,15 @@ async def _ensure_lovelace_resource(hass: HomeAssistant) -> None:
         existing_urls = {item["url"] for item in resources.async_items()}
         if CARD_URL in existing_urls:
             _LOGGER.debug("HAPM: Card resource already registered at %s", CARD_URL)
-            return
+            return True
 
         await resources.async_create_item({"res_type": "module", "url": CARD_URL})
         _LOGGER.info("HAPM: Card resource registered at %s", CARD_URL)
+        return True
 
     except ImportError:
         _LOGGER.warning("HAPM: Could not import lovelace resources module.")
+        return False
     except Exception as err:  # noqa: BLE001
-        _LOGGER.warning(
-            "HAPM: Could not register Lovelace resource automatically (%s). "
-            "Add manually: Settings \u2192 Dashboards \u2192 Resources \u2192 %s (JavaScript Module)",
-            err, CARD_URL,
-        )
+        _LOGGER.warning("HAPM: Unexpected error registering Lovelace resource: %s", err)
+        return False
