@@ -2,6 +2,9 @@
 
 DOMAIN = "hapm"
 
+# Platforms
+PLATFORMS = ["sensor"]
+
 # Config entry keys
 CONF_CHILD_NAME = "child_name"
 CONF_CURRENCY_SYMBOL = "currency_symbol"
@@ -9,6 +12,13 @@ CONF_AVATAR_COLOUR = "avatar_colour"
 
 # Data keys
 DATA_STORE = "store"
+
+# Storage
+STORAGE_VERSION = 1
+STORAGE_KEY_CHORES = "hapm_chores"
+STORAGE_KEY_LEDGER = "hapm_ledger"
+STORAGE_KEY_OCCURRENCES = "hapm_occurrences"
+STORAGE_KEY_GLOBAL = "hapm_global"
 
 # Recurrence types
 RECURRENCE_MANUAL = "manual"
@@ -37,6 +47,7 @@ OCCURRENCE_STATUS_EXPIRED = "expired"
 EVENT_CHORE_COMPLETED = "chore_completed"
 EVENT_CHORE_REVERSED = "chore_reversed"
 EVENT_OCCURRENCE_LOGGED = "occurrence_logged"
+EVENT_PAYMENT_MADE = "payment_made"
 
 # Internal HA event fired after any store mutation so sensors refresh immediately
 EVENT_HAPM_DATA_CHANGED = "hapm_data_changed"
