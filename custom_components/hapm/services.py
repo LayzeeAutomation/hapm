@@ -16,6 +16,7 @@ from .const import (
     DOMAIN,
     EVENT_CHORE_COMPLETED,
     EVENT_CHORE_REVERSED,
+    EVENT_HAPM_DATA_CHANGED,
     EVENT_OCCURRENCE_LOGGED,
     OCCURRENCE_STATUS_COMPLETE,
     OCCURRENCE_STATUS_EXPIRED,
@@ -47,8 +48,6 @@ SERVICE_CLEAR_HOLIDAY_MODE = "clear_holiday_mode"
 
 # ---------------------------------------------------------------------------
 # Schemas
-# vol.Coerce(int) is used instead of plain int so that JS numbers (which
-# arrive as floats, e.g. 7.0) are accepted without a validation error.
 # ---------------------------------------------------------------------------
 SCHEMA_ADD_CHORE = vol.Schema(
     {
@@ -121,6 +120,11 @@ SCHEMA_CLEAR_HOLIDAY_MODE = vol.Schema({})
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _fire_data_changed(hass: HomeAssistant) -> None:
+    """Fire internal event so all HAPM sensors refresh immediately."""
+    hass.bus.async_fire(EVENT_HAPM_DATA_CHANGED)
+
+
 def _calculate_next_due(chore: Chore) -> datetime | None:
     """Calculate the next due date after a completion based on original schedule."""
     if chore.recurrence == RECURRENCE_MANUAL:
@@ -175,7 +179,7 @@ def _calculate_per_child_amount(chore: Chore) -> float:
 # Service handlers
 # ---------------------------------------------------------------------------
 
-async def handle_add_chore(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_add_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Create and persist a new chore."""
     data = call.data
     chore = Chore(
@@ -195,10 +199,11 @@ async def handle_add_chore(call: ServiceCall, store: HAPMStore) -> None:
         chore.next_due = datetime.utcnow()
 
     await store.async_add_chore(chore)
+    _fire_data_changed(hass)
     _LOGGER.info("HAPM: Added chore '%s' (id=%s)", chore.name, chore.id)
 
 
-async def handle_complete_chore(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_complete_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Mark a standard (single-occurrence) chore as complete and credit balance."""
     chore_id = call.data["chore_id"]
     child_entry_id = call.data["child_entry_id"]
@@ -222,6 +227,7 @@ async def handle_complete_chore(call: ServiceCall, store: HAPMStore) -> None:
     chore.last_completed = datetime.utcnow()
     chore.next_due = _calculate_next_due(chore)
     await store.async_update_chore(chore)
+    _fire_data_changed(hass)
 
     _LOGGER.info(
         "HAPM: Chore '%s' completed by child '%s'. Amount credited: %.2f",
@@ -229,7 +235,7 @@ async def handle_complete_chore(call: ServiceCall, store: HAPMStore) -> None:
     )
 
 
-async def handle_log_occurrence(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_log_occurrence(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Log one occurrence toward a multi-occurrence chore."""
     chore_id = call.data["chore_id"]
     child_entry_id = call.data["child_entry_id"]
@@ -308,9 +314,10 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore) -> None:
         )
 
     await store.async_update_window(window)
+    _fire_data_changed(hass)
 
 
-async def handle_mark_paid(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_mark_paid(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Clear a child's balance and record a payment event."""
     child_entry_id = call.data["child_entry_id"]
     note = call.data.get("note")
@@ -322,13 +329,14 @@ async def handle_mark_paid(call: ServiceCall, store: HAPMStore) -> None:
         )
 
     event = await store.async_clear_balance(child_entry_id, note=note)
+    _fire_data_changed(hass)
     _LOGGER.info(
         "HAPM: Balance of %.2f paid and cleared for child '%s'.",
         balance, child_entry_id,
     )
 
 
-async def handle_pause_chore(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_pause_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Pause a single chore for N days."""
     chore_id = call.data["chore_id"]
     days = call.data["days"]
@@ -336,29 +344,33 @@ async def handle_pause_chore(call: ServiceCall, store: HAPMStore) -> None:
     if not chore:
         raise HomeAssistantError(f"HAPM: Chore '{chore_id}' not found.")
     await store.async_pause_chore(chore_id, days)
+    _fire_data_changed(hass)
     _LOGGER.info("HAPM: Chore '%s' paused for %d day(s).", chore.name, days)
 
 
-async def handle_resume_chore(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_resume_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Immediately resume a paused chore."""
     chore_id = call.data["chore_id"]
     chore = store.get_chore(chore_id)
     if not chore:
         raise HomeAssistantError(f"HAPM: Chore '{chore_id}' not found.")
     await store.async_resume_chore(chore_id)
+    _fire_data_changed(hass)
     _LOGGER.info("HAPM: Chore '%s' manually resumed.", chore.name)
 
 
-async def handle_set_holiday_mode(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_set_holiday_mode(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Enable holiday mode for N days, pausing all chores globally."""
     days = call.data["days"]
     await store.async_set_holiday_mode(days)
+    _fire_data_changed(hass)
     _LOGGER.info("HAPM: Holiday mode enabled for %d day(s).", days)
 
 
-async def handle_clear_holiday_mode(call: ServiceCall, store: HAPMStore) -> None:
+async def handle_clear_holiday_mode(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     """Immediately lift holiday mode."""
     await store.async_clear_holiday_mode()
+    _fire_data_changed(hass)
     _LOGGER.info("HAPM: Holiday mode cleared.")
 
 
@@ -376,28 +388,28 @@ def async_register_services(hass: HomeAssistant) -> None:
         return store
 
     async def _add_chore(call: ServiceCall) -> None:
-        await handle_add_chore(call, _get_store())
+        await handle_add_chore(call, _get_store(), hass)
 
     async def _complete_chore(call: ServiceCall) -> None:
-        await handle_complete_chore(call, _get_store())
+        await handle_complete_chore(call, _get_store(), hass)
 
     async def _log_occurrence(call: ServiceCall) -> None:
-        await handle_log_occurrence(call, _get_store())
+        await handle_log_occurrence(call, _get_store(), hass)
 
     async def _mark_paid(call: ServiceCall) -> None:
-        await handle_mark_paid(call, _get_store())
+        await handle_mark_paid(call, _get_store(), hass)
 
     async def _pause_chore(call: ServiceCall) -> None:
-        await handle_pause_chore(call, _get_store())
+        await handle_pause_chore(call, _get_store(), hass)
 
     async def _resume_chore(call: ServiceCall) -> None:
-        await handle_resume_chore(call, _get_store())
+        await handle_resume_chore(call, _get_store(), hass)
 
     async def _set_holiday_mode(call: ServiceCall) -> None:
-        await handle_set_holiday_mode(call, _get_store())
+        await handle_set_holiday_mode(call, _get_store(), hass)
 
     async def _clear_holiday_mode(call: ServiceCall) -> None:
-        await handle_clear_holiday_mode(call, _get_store())
+        await handle_clear_holiday_mode(call, _get_store(), hass)
 
     hass.services.async_register(DOMAIN, SERVICE_ADD_CHORE, _add_chore, schema=SCHEMA_ADD_CHORE)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_CHORE, _complete_chore, schema=SCHEMA_COMPLETE_CHORE)

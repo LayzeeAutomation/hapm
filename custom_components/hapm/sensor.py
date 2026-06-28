@@ -16,6 +16,7 @@ from .const import (
     CONF_CURRENCY_SYMBOL,
     DATA_STORE,
     DOMAIN,
+    EVENT_HAPM_DATA_CHANGED,
     RECURRENCE_MANUAL,
 )
 from .store import HAPMStore
@@ -71,16 +72,26 @@ class HAPMBalanceSensor(SensorEntity):
         self._attr_name = f"{child_name} Pocket Money Balance"
         self._attr_native_unit_of_measurement = currency
         self._attr_icon = "mdi:piggy-bank"
-        self._unsub = None
+        self._unsub_interval = None
+        self._unsub_event = None
 
     async def async_added_to_hass(self) -> None:
-        self._unsub = async_track_time_interval(
+        self._unsub_interval = async_track_time_interval(
             self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL
+        )
+        self._unsub_event = self._hass.bus.async_listen(
+            EVENT_HAPM_DATA_CHANGED, self._on_data_changed
         )
 
     async def async_will_remove_from_hass(self) -> None:
-        if self._unsub:
-            self._unsub()
+        if self._unsub_interval:
+            self._unsub_interval()
+        if self._unsub_event:
+            self._unsub_event()
+
+    @callback
+    def _on_data_changed(self, _event) -> None:
+        self.async_write_ha_state()
 
     @callback
     async def _async_update_and_write(self, _now: datetime) -> None:
@@ -92,7 +103,6 @@ class HAPMBalanceSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        # Use correct method name: get_ledger_for_child
         ledger = self._store.get_ledger_for_child(self._child_entry_id)
         last_payment = next(
             (e for e in reversed(ledger) if e.event_type == "payment_made"),
@@ -131,16 +141,26 @@ class HAPMChoresDueSensor(SensorEntity):
         self._attr_name = f"{child_name} Chores Due"
         self._attr_native_unit_of_measurement = "chores"
         self._attr_icon = "mdi:checkbox-marked-circle-outline"
-        self._unsub = None
+        self._unsub_interval = None
+        self._unsub_event = None
 
     async def async_added_to_hass(self) -> None:
-        self._unsub = async_track_time_interval(
+        self._unsub_interval = async_track_time_interval(
             self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL
+        )
+        self._unsub_event = self._hass.bus.async_listen(
+            EVENT_HAPM_DATA_CHANGED, self._on_data_changed
         )
 
     async def async_will_remove_from_hass(self) -> None:
-        if self._unsub:
-            self._unsub()
+        if self._unsub_interval:
+            self._unsub_interval()
+        if self._unsub_event:
+            self._unsub_event()
+
+    @callback
+    def _on_data_changed(self, _event) -> None:
+        self.async_write_ha_state()
 
     @callback
     async def _async_update_and_write(self, _now: datetime) -> None:
@@ -149,7 +169,6 @@ class HAPMChoresDueSensor(SensorEntity):
     def _get_due_chores(self) -> list:
         now = datetime.utcnow()
         due = []
-        # Use correct method name: get_chores
         for chore in self._store.get_chores():
             if self._child_entry_id not in chore.assigned_to:
                 continue
