@@ -47,6 +47,8 @@ SERVICE_CLEAR_HOLIDAY_MODE = "clear_holiday_mode"
 
 # ---------------------------------------------------------------------------
 # Schemas
+# vol.Coerce(int) is used instead of plain int so that JS numbers (which
+# arrive as floats, e.g. 7.0) are accepted without a validation error.
 # ---------------------------------------------------------------------------
 SCHEMA_ADD_CHORE = vol.Schema(
     {
@@ -57,9 +59,9 @@ SCHEMA_ADD_CHORE = vol.Schema(
         vol.Optional("recurrence", default=RECURRENCE_MANUAL): vol.In(
             [RECURRENCE_DAILY, RECURRENCE_WEEKLY, RECURRENCE_MONTHLY, RECURRENCE_MANUAL]
         ),
-        vol.Optional("interval", default=1): vol.All(int, vol.Range(min=1)),
-        vol.Optional("occurrences_required", default=1): vol.All(int, vol.Range(min=1)),
-        vol.Optional("occurrence_window_days"): vol.All(int, vol.Range(min=1)),
+        vol.Optional("interval", default=1): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional("occurrences_required", default=1): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        vol.Optional("occurrence_window_days"): vol.All(vol.Coerce(int), vol.Range(min=1)),
         vol.Optional("pay_mode", default=PAY_MODE_PER_OCCURRENCE): vol.In(
             [PAY_MODE_PER_OCCURRENCE, PAY_MODE_ON_COMPLETION]
         ),
@@ -96,7 +98,7 @@ SCHEMA_MARK_PAID = vol.Schema(
 SCHEMA_PAUSE_CHORE = vol.Schema(
     {
         vol.Required("chore_id"): cv.string,
-        vol.Required("days"): vol.All(int, vol.Range(min=1)),
+        vol.Required("days"): vol.All(vol.Coerce(int), vol.Range(min=1)),
     }
 )
 
@@ -108,7 +110,7 @@ SCHEMA_RESUME_CHORE = vol.Schema(
 
 SCHEMA_SET_HOLIDAY_MODE = vol.Schema(
     {
-        vol.Required("days"): vol.All(int, vol.Range(min=1)),
+        vol.Required("days"): vol.All(vol.Coerce(int), vol.Range(min=1)),
     }
 )
 
@@ -129,7 +131,6 @@ def _calculate_next_due(chore: Chore) -> datetime | None:
     if chore.recurrence == RECURRENCE_WEEKLY:
         return base + timedelta(weeks=chore.interval)
     if chore.recurrence == RECURRENCE_MONTHLY:
-        # Simple month approximation; can be refined later
         return base + timedelta(days=30 * chore.interval)
     return None
 
@@ -142,18 +143,12 @@ def _credit_children(
     occurrence_number: int | None = None,
     note: str | None = None,
 ) -> list[LedgerEvent]:
-    """Build ledger events for all credited children.
-
-    For individual chores, only credit the calling child.
-    For team chores, credit all assigned children.
-    """
+    """Build ledger events for all credited children."""
     events: list[LedgerEvent] = []
-
     if chore.assignment_mode == ASSIGNMENT_MODE_TEAM:
         recipients = chore.assigned_to
     else:
         recipients = [child_entry_id]
-
     for recipient in recipients:
         events.append(
             LedgerEvent(
@@ -196,7 +191,6 @@ async def handle_add_chore(call: ServiceCall, store: HAPMStore) -> None:
         assignment_mode=data.get("assignment_mode", ASSIGNMENT_MODE_INDIVIDUAL),
         pay_split_mode=data.get("pay_split_mode", "full"),
     )
-    # Set initial next_due for scheduled chores
     if chore.recurrence != RECURRENCE_MANUAL:
         chore.next_due = datetime.utcnow()
 
@@ -225,7 +219,6 @@ async def handle_complete_chore(call: ServiceCall, store: HAPMStore) -> None:
     for event in events:
         await store.async_add_ledger_event(event)
 
-    # Update schedule
     chore.last_completed = datetime.utcnow()
     chore.next_due = _calculate_next_due(chore)
     await store.async_update_chore(chore)
@@ -253,8 +246,6 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore) -> None:
         )
 
     now = datetime.utcnow()
-
-    # Get or create active window
     window = store.get_open_window(chore_id)
     if window is None:
         if chore.occurrence_window_days is None:
@@ -267,7 +258,6 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore) -> None:
         )
         await store.async_open_window(window)
 
-    # Check window hasn't expired
     if now > window.window_end:
         window.status = OCCURRENCE_STATUS_EXPIRED
         await store.async_update_window(window)
@@ -285,7 +275,6 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore) -> None:
 
     amount = _calculate_per_child_amount(chore)
 
-    # Credit immediately for per_occurrence mode
     if chore.pay_mode == PAY_MODE_PER_OCCURRENCE:
         events = _credit_children(
             chore, child_entry_id, amount, EVENT_OCCURRENCE_LOGGED,
@@ -294,14 +283,12 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore) -> None:
         for event in events:
             await store.async_add_ledger_event(event)
 
-    # Check if window is now fully complete
     if window.is_complete:
         window.status = OCCURRENCE_STATUS_COMPLETE
         chore.last_completed = now
         chore.next_due = _calculate_next_due(chore)
         await store.async_update_chore(chore)
 
-        # Credit on_completion mode now that all occurrences are done
         if chore.pay_mode == PAY_MODE_ON_COMPLETION:
             events = _credit_children(
                 chore, child_entry_id, amount * chore.occurrences_required,
@@ -345,11 +332,9 @@ async def handle_pause_chore(call: ServiceCall, store: HAPMStore) -> None:
     """Pause a single chore for N days."""
     chore_id = call.data["chore_id"]
     days = call.data["days"]
-
     chore = store.get_chore(chore_id)
     if not chore:
         raise HomeAssistantError(f"HAPM: Chore '{chore_id}' not found.")
-
     await store.async_pause_chore(chore_id, days)
     _LOGGER.info("HAPM: Chore '%s' paused for %d day(s).", chore.name, days)
 
@@ -357,11 +342,9 @@ async def handle_pause_chore(call: ServiceCall, store: HAPMStore) -> None:
 async def handle_resume_chore(call: ServiceCall, store: HAPMStore) -> None:
     """Immediately resume a paused chore."""
     chore_id = call.data["chore_id"]
-
     chore = store.get_chore(chore_id)
     if not chore:
         raise HomeAssistantError(f"HAPM: Chore '{chore_id}' not found.")
-
     await store.async_resume_chore(chore_id)
     _LOGGER.info("HAPM: Chore '%s' manually resumed.", chore.name)
 
