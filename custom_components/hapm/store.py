@@ -21,6 +21,11 @@ from .models import Chore, GlobalState, LedgerEvent, OccurrenceWindow
 
 _LOGGER = logging.getLogger(__name__)
 
+# Sentinel far-future date used to represent an indefinite pause.
+# Using datetime.max directly can cause overflow in some serialisers,
+# so we use year 9999 which is safe for ISO-8601 strings.
+_INDEFINITE_PAUSE = datetime(9999, 12, 31, 23, 59, 59)
+
 
 class HAPMStore:
     """Manages all persistent HAPM data via HA storage helpers."""
@@ -92,10 +97,14 @@ class HAPMStore:
         self._chores.pop(chore_id, None)
         await self.async_save()
 
-    async def async_pause_chore(self, chore_id: str, days: int) -> None:
+    async def async_pause_chore(self, chore_id: str, days: Optional[int]) -> None:
+        """Pause a chore.  Pass days=None for an indefinite pause."""
         chore = self._chores.get(chore_id)
         if chore:
-            chore.paused_until = datetime.utcnow() + timedelta(days=days)
+            chore.paused_until = (
+                _INDEFINITE_PAUSE if days is None
+                else datetime.utcnow() + timedelta(days=days)
+            )
             await self.async_save()
 
     async def async_resume_chore(self, chore_id: str) -> None:
@@ -103,6 +112,18 @@ class HAPMStore:
         if chore:
             chore.paused_until = None
             await self.async_save()
+
+    def is_paused(self, chore: Chore) -> bool:
+        """Return True if the chore is currently paused (timed or indefinite)."""
+        return bool(chore.paused_until and datetime.utcnow() < chore.paused_until)
+
+    def paused_until_display(self, chore: Chore) -> Optional[str]:
+        """Human-readable pause label, or None if not paused."""
+        if not self.is_paused(chore):
+            return None
+        if chore.paused_until >= _INDEFINITE_PAUSE:
+            return "Indefinite"
+        return chore.paused_until.strftime("%d %b %Y")
 
     # ------------------------------------------------------------------
     # Ledger / Balance
@@ -112,19 +133,6 @@ class HAPMStore:
         return [e for e in self._ledger if e.child_entry_id == child_entry_id]
 
     def get_balance(self, child_entry_id: str) -> float:
-        """
-        Return the current owed balance for a child.
-
-        The ledger is the single source of truth.  Every event carries a
-        signed amount:
-          - Chore completions / occurrence credits  → positive
-          - Payment events (written by async_clear_balance) → negative
-            (the negative value exactly offsets the outstanding credits)
-
-        Summing ALL amounts therefore always gives the correct net balance.
-        Excluding payment events (the old behaviour) was wrong: it meant
-        the negative offset was never counted and the balance never fell.
-        """
         return round(
             sum(e.amount for e in self._ledger if e.child_entry_id == child_entry_id),
             2,
@@ -136,17 +144,8 @@ class HAPMStore:
         return event
 
     async def async_clear_balance(self, child_entry_id: str, note: Optional[str] = None) -> LedgerEvent:
-        """
-        Record a payment that zeroes the running balance.
-
-        Writes a single EVENT_PAYMENT_MADE entry whose amount is the
-        negative of the current outstanding balance.  Because get_balance
-        now sums all amounts, this brings the net to exactly 0.00.
-        """
         current_balance = self.get_balance(child_entry_id)
         if current_balance <= 0:
-            # Nothing to pay — this should have been caught upstream,
-            # but guard here too so we never write a zero/positive offset.
             _LOGGER.warning(
                 "HAPM: async_clear_balance called for '%s' but balance is %.2f — skipping.",
                 child_entry_id, current_balance,
@@ -207,7 +206,7 @@ class HAPMStore:
             return False
         if self.is_holiday_mode_active():
             return False
-        if chore.paused_until and datetime.utcnow() < chore.paused_until:
+        if self.is_paused(chore):
             return False
         return True
 

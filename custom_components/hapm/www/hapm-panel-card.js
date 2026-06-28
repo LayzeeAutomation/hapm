@@ -1,13 +1,16 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.14
+ * HAPM Pocket Money Panel Card  v0.1.15
  *
- * Fix vs 0.1.13:
- *   ShadowRoot does not support insertAdjacentHTML on iOS Safari — replaced
- *   with createElement/appendChild for the modals container.
- *   Also guards customElements.define against double-registration.
+ * Changes vs 0.1.14:
+ *   1. Pause button now opens a modal asking how many days (optional).
+ *      Leaving the field blank pauses the chore indefinitely until resumed.
+ *   2. New "Paused" tab (between Chores and Ledger) lists all paused chores
+ *      for the active child with a Resume button on each.
+ *   3. Backend: services.py days is now optional; store.py uses a far-future
+ *      sentinel for indefinite pauses.
  */
 
-const HAPM_VERSION = '0.1.14';
+const HAPM_VERSION = '0.1.15';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -33,6 +36,16 @@ function esc(s) {
 }
 function daysRemaining(isoUntil) {
   return Math.max(0, Math.ceil((new Date(isoUntil) - new Date()) / 86400000));
+}
+// Is this paused_until value the indefinite sentinel (year 9999)?
+function isIndefinitePause(isoUntil) {
+  return isoUntil && new Date(isoUntil).getFullYear() >= 9999;
+}
+function fmtPausedUntil(isoUntil) {
+  if (!isoUntil) return '';
+  if (isIndefinitePause(isoUntil)) return 'Indefinite';
+  const d = new Date(isoUntil);
+  return 'Until ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -80,6 +93,7 @@ const STYLES = `
   .badge { display:inline-flex; align-items:center; justify-content:center;
     background:var(--primary-color); color:#fff; border-radius:9999px;
     font-size:10px; font-weight:700; padding:1px 6px; margin-left:4px; }
+  .badge-warn { background:#c9920a; }
 
   .panel { padding:14px 16px; }
   .chore-card { background:var(--secondary-background-color); border-radius:10px;
@@ -87,6 +101,7 @@ const STYLES = `
     grid-template-columns:1fr auto; gap:8px; align-items:start; transition:opacity 300ms; }
   .chore-card.completing { opacity:0.35; pointer-events:none; }
   .chore-card.optimistic { opacity:0.6; }
+  .chore-card.paused-card { border-left:3px solid #c9920a; opacity:0.85; }
   .chore-top { display:flex; align-items:flex-start; gap:10px; }
   .chore-icon { width:34px; height:34px; border-radius:8px; display:flex;
     align-items:center; justify-content:center; font-size:18px;
@@ -96,9 +111,10 @@ const STYLES = `
   .chore-meta { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
   .pill { display:inline-flex; align-items:center; padding:2px 7px; border-radius:9999px;
     font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
-  .pill-due  { background:rgba(109,170,69,0.15); color:var(--success-color,#6daa45); }
-  .pill-multi{ background:rgba(124,99,209,0.15); color:#7c63d1; }
-  .pill-recur{ background:rgba(85,145,199,0.15); color:#5591c7; }
+  .pill-due   { background:rgba(109,170,69,0.15); color:var(--success-color,#6daa45); }
+  .pill-multi { background:rgba(124,99,209,0.15); color:#7c63d1; }
+  .pill-recur { background:rgba(85,145,199,0.15); color:#5591c7; }
+  .pill-paused{ background:rgba(201,146,10,0.15); color:#c9920a; }
   .occ-track { display:flex; gap:4px; margin-top:6px; }
   .occ-dot { width:9px; height:9px; border-radius:9999px;
     background:var(--divider-color); border:1.5px solid var(--secondary-text-color); }
@@ -114,6 +130,8 @@ const STYLES = `
   .btn-ghost { background:transparent; border:1.5px solid var(--divider-color);
     color:var(--secondary-text-color); }
   .btn-ghost:hover { border-color:var(--primary-color); color:var(--primary-color); }
+  .btn-warn { background:transparent; border:1.5px solid #c9920a; color:#c9920a; }
+  .btn-warn:hover { background:#c9920a; color:#fff; }
   .btn-pay { width:100%; padding:10px; font-size:14px; margin-top:8px;
     background:var(--success-color,#6daa45); color:#fff; border:none;
     border-radius:10px; font-family:inherit; font-weight:700; cursor:pointer; }
@@ -138,6 +156,7 @@ const STYLES = `
   .hapm-label { font-size:11px; font-weight:600; text-transform:uppercase;
     letter-spacing:0.06em; color:var(--secondary-text-color);
     margin-bottom:6px; display:block; }
+  .hapm-hint { font-size:12px; color:var(--secondary-text-color); margin-top:-8px; margin-bottom:12px; }
   .hapm-input, .hapm-select { width:100%; padding:10px 12px; font-size:16px;
     border:1.5px solid var(--divider-color,#555); border-radius:10px;
     font-family:inherit; background:var(--secondary-background-color,#2c2c2e);
@@ -197,7 +216,7 @@ class HapmPanelCard extends HTMLElement {
     }
   }
 
-  // ── Data sync ─────────────────────────────────────────────────────────────
+  // ── Data sync ────────────────────────────────────────────────────────────
   _syncFromHass() {
     if (!this._hass) return;
     const now    = Date.now();
@@ -226,7 +245,10 @@ class HapmPanelCard extends HTMLElement {
       const currency     = attrs.currency      || CURRENCY_DEFAULT;
       const rawBalance   = parseFloat(state.state) || 0;
       const dueSensorId  = entityId.replace('_pocket_money_balance','_chores_due');
-      const serverChores = states[dueSensorId]?.attributes?.due_chores || [];
+      const dueSensor    = states[dueSensorId];
+      const serverChores = dueSensor?.attributes?.due_chores || [];
+      // Paused chores come from a separate attribute on the due sensor
+      const pausedChores = dueSensor?.attributes?.paused_chores || [];
       const lastPaid     = attrs.last_paid || null;
       const optimistic   = this._optimisticChores[childEntryId] || [];
 
@@ -237,7 +259,8 @@ class HapmPanelCard extends HTMLElement {
       const balance = this._optimisticPaid.has(childEntryId) ? 0 : rawBalance;
 
       children.push({ childEntryId, childName, colour, currency, balance,
-                       dueChores: [...serverChores, ...optimistic], lastPaid });
+                       dueChores: [...serverChores, ...optimistic],
+                       pausedChores, lastPaid });
     }
 
     if (children.length) {
@@ -258,12 +281,12 @@ class HapmPanelCard extends HTMLElement {
   }
 
   _anyModalOpen() {
-    return ['modal-add','modal-holiday','modal-pay'].some(
+    return ['modal-add','modal-holiday','modal-pay','modal-pause'].some(
       id => !this.shadowRoot.getElementById(id)?.classList.contains('hidden')
     );
   }
 
-  // ── Build DOM — called ONCE ──────────────────────────────────────────────
+  // ── Build DOM — called ONCE ───────────────────────────────────────────────
   _buildDOM() {
     const sr = this.shadowRoot;
     sr.innerHTML = '';
@@ -272,7 +295,6 @@ class HapmPanelCard extends HTMLElement {
     style.textContent = STYLES;
     sr.appendChild(style);
 
-    // Main card
     const card = document.createElement('ha-card');
     card.className = 'hapm';
     card.innerHTML = `
@@ -294,13 +316,13 @@ class HapmPanelCard extends HTMLElement {
       </div>
       <div class="nav">
         <button class="nav-btn active" id="nav-chores">Chores<span class="badge" id="nav-badge" style="display:none"></span></button>
+        <button class="nav-btn" id="nav-paused">Paused<span class="badge badge-warn" id="nav-paused-badge" style="display:none"></span></button>
         <button class="nav-btn" id="nav-ledger">Ledger</button>
       </div>
       <div class="panel" id="panel"></div>`;
     sr.appendChild(card);
 
-    // Modals — appended as a sibling div to ha-card inside shadow root.
-    // Cannot use sr.insertAdjacentHTML — ShadowRoot does not support it on iOS Safari.
+    // Modals container — use createElement, NOT sr.insertAdjacentHTML (unsupported on iOS Safari)
     const modals = document.createElement('div');
     modals.innerHTML = `
       <div class="hapm-backdrop hidden" id="modal-add">
@@ -365,6 +387,22 @@ class HapmPanelCard extends HTMLElement {
             <button class="hapm-btn hapm-btn-ok"     id="m-pay-submit">Confirm Pay</button>
           </div>
         </div>
+      </div>
+
+      <div class="hapm-backdrop hidden" id="modal-pause">
+        <div class="hapm-sheet">
+          <div class="hapm-handle"></div>
+          <div class="hapm-title">⏸ Pause Chore</div>
+          <div class="hapm-confirm-msg" id="m-pause-chore-name" style="text-align:left;margin-bottom:16px;font-weight:600"></div>
+          <label class="hapm-label">Pause for how many days?</label>
+          <input class="hapm-input" id="m-pause-days" type="number"
+            inputmode="numeric" min="1" placeholder="Leave blank to pause indefinitely">
+          <div class="hapm-hint">Leave blank to pause until manually resumed.</div>
+          <div class="hapm-actions">
+            <button class="hapm-btn hapm-btn-cancel" id="m-pause-cancel">Cancel</button>
+            <button class="hapm-btn hapm-btn-ok"     id="m-pause-submit">Pause Chore</button>
+          </div>
+        </div>
       </div>`;
     sr.appendChild(modals);
 
@@ -372,7 +410,7 @@ class HapmPanelCard extends HTMLElement {
     this._updateDOM();
   }
 
-  // ── Update DOM — surgical patches only, skips panel if modal open ──────────
+  // ── Update DOM — surgical patches only ───────────────────────────────────
   _updateDOM() {
     const sr    = this.shadowRoot;
     const child = this._activeChild;
@@ -406,6 +444,7 @@ class HapmPanelCard extends HTMLElement {
         balEl.className = 'kpi-value' + (child.balance > 0 ? ' positive' : '');
       }
       const n = (child.dueChores || []).length;
+      const p = (child.pausedChores || []).length;
       const dueEl = sr.getElementById('kpi-due');
       if (dueEl) dueEl.textContent = n;
       const dueSubEl = sr.getElementById('kpi-due-sub');
@@ -414,9 +453,12 @@ class HapmPanelCard extends HTMLElement {
       if (lpEl) lpEl.textContent = child.lastPaid ? fmtDate(child.lastPaid) : '—';
       const badge = sr.getElementById('nav-badge');
       if (badge) { badge.textContent = n; badge.style.display = n ? '' : 'none'; }
+      const pbadge = sr.getElementById('nav-paused-badge');
+      if (pbadge) { pbadge.textContent = p; pbadge.style.display = p ? '' : 'none'; }
     }
 
     sr.getElementById('nav-chores')?.classList.toggle('active', this._view === 'chores');
+    sr.getElementById('nav-paused')?.classList.toggle('active', this._view === 'paused');
     sr.getElementById('nav-ledger')?.classList.toggle('active', this._view === 'ledger');
 
     if (this._anyModalOpen()) return;
@@ -426,6 +468,10 @@ class HapmPanelCard extends HTMLElement {
 
     if (this._view === 'chores') {
       panel.innerHTML = this._choresPanelHTML(child);
+      panel.querySelectorAll('[data-action]').forEach(el =>
+        el.addEventListener('click', e => this._handleAction(e)));
+    } else if (this._view === 'paused') {
+      panel.innerHTML = this._pausedPanelHTML(child);
       panel.querySelectorAll('[data-action]').forEach(el =>
         el.addEventListener('click', e => this._handleAction(e)));
     } else {
@@ -457,6 +503,40 @@ class HapmPanelCard extends HTMLElement {
       ${choreHTML}${payBtn}`;
   }
 
+  _pausedPanelHTML(child) {
+    if (!child) return `<div class="empty"><div class="empty-icon">👶</div>No children configured.</div>`;
+    const chores = child.pausedChores || [];
+    if (!chores.length) {
+      return `<div class="empty"><div class="empty-icon">▶️</div>No paused chores — everything is active.</div>`;
+    }
+    return `
+      <div style="margin-bottom:10px"><strong style="font-size:13px">Paused Chores</strong></div>
+      ${chores.map(c => this._pausedCardHTML(c, child)).join('')}`;
+  }
+
+  _pausedCardHTML(c, child) {
+    const label = fmtPausedUntil(c.paused_until);
+    return `<div class="chore-card paused-card">
+      <div>
+        <div class="chore-top">
+          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
+          <div>
+            <div class="chore-name">${esc(c.name)}</div>
+            ${c.description ? `<div class="chore-desc">${esc(c.description)}</div>` : ''}
+            <div class="chore-meta">
+              <span class="pill pill-paused">⏸ ${esc(label)}</span>
+              ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="chore-actions">
+          <button class="btn btn-warn" data-action="resume" data-chore="${esc(c.id)}">▶ Resume</button>
+        </div>
+      </div>
+      <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
+    </div>`;
+  }
+
   _choreCardHTML(c, child) {
     const isMulti = c.occurrences_required > 1;
     const isOpt   = !!c._optimistic;
@@ -479,19 +559,22 @@ class HapmPanelCard extends HTMLElement {
           ${isMulti
             ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log occurrence</button>`
             : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done ✓</button>`}
-          <button class="btn btn-ghost" data-action="pause" data-chore="${esc(c.id)}">Pause 7d</button>
+          <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">Pause</button>
         </div>` : ''}
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
     </div>`;
   }
 
-  // ── Bind events — called ONCE ────────────────────────────────────────────
+  // ── Bind events — called ONCE ─────────────────────────────────────────────
   _bindEvents() {
     const sr = this.shadowRoot;
 
     sr.getElementById('nav-chores')?.addEventListener('click', () => {
       this._view = 'chores'; this._updateDOM();
+    });
+    sr.getElementById('nav-paused')?.addEventListener('click', () => {
+      this._view = 'paused'; this._updateDOM();
     });
     sr.getElementById('nav-ledger')?.addEventListener('click', () => {
       this._view = 'ledger'; this._updateDOM();
@@ -510,6 +593,7 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
+    // Add chore modal
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value) || 1;
@@ -546,6 +630,7 @@ class HapmPanelCard extends HTMLElement {
       this._callService('add_chore', svcData);
     });
 
+    // Holiday modal
     sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
     sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
       const days = parseInt(sr.getElementById('m-holiday-days').value) || 7;
@@ -557,6 +642,7 @@ class HapmPanelCard extends HTMLElement {
       this._updateDOM();
     });
 
+    // Pay modal
     sr.getElementById('m-pay-cancel')?.addEventListener('click', () => this._closeModal('modal-pay'));
     sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
       const child = this._activeChild;
@@ -567,9 +653,21 @@ class HapmPanelCard extends HTMLElement {
       this._updateDOM();
       this._callService('mark_paid', { child_entry_id: child.childEntryId });
     });
+
+    // Pause modal
+    sr.getElementById('m-pause-cancel')?.addEventListener('click', () => this._closeModal('modal-pause'));
+    sr.getElementById('m-pause-submit')?.addEventListener('click', () => {
+      const choreId = sr.getElementById('modal-pause').dataset.choreId;
+      const rawDays = sr.getElementById('m-pause-days').value.trim();
+      const days    = rawDays === '' ? null : parseInt(rawDays, 10);
+      this._closeModal('modal-pause');
+      const svcData = { chore_id: choreId };
+      if (days !== null) svcData.days = days;
+      this._callService('pause_chore', svcData);
+    });
   }
 
-  // ── Action dispatcher ────────────────────────────────────────────────────
+  // ── Action dispatcher ─────────────────────────────────────────────────────
   _handleAction(e) {
     const el     = e.currentTarget;
     const action = el.dataset.action;
@@ -608,6 +706,16 @@ class HapmPanelCard extends HTMLElement {
         break;
       }
 
+      case 'open-pause': {
+        const modal = sr.getElementById('modal-pause');
+        modal.dataset.choreId = el.dataset.chore;
+        sr.getElementById('m-pause-chore-name').textContent = el.dataset.choreName || '';
+        sr.getElementById('m-pause-days').value = '';
+        this._openModal('modal-pause');
+        setTimeout(() => sr.getElementById('m-pause-days')?.focus(), 80);
+        break;
+      }
+
       case 'complete':
         el.closest('.chore-card')?.classList.add('completing');
         this._callService('complete_chore', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
@@ -617,8 +725,8 @@ class HapmPanelCard extends HTMLElement {
         this._callService('log_occurrence', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
         break;
 
-      case 'pause':
-        this._callService('pause_chore', { chore_id: el.dataset.chore, days: 7 });
+      case 'resume':
+        this._callService('resume_chore', { chore_id: el.dataset.chore });
         break;
     }
   }

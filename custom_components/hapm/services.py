@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -34,7 +35,6 @@ from .store import HAPMStore
 
 _LOGGER = logging.getLogger(__name__)
 
-# Default occurrence window: 7 days per occurrence required
 DEFAULT_WINDOW_DAYS_PER_OCC = 7
 
 SERVICE_ADD_CHORE = "add_chore"
@@ -94,7 +94,12 @@ SCHEMA_MARK_PAID = vol.Schema(
 SCHEMA_PAUSE_CHORE = vol.Schema(
     {
         vol.Required("chore_id"): cv.string,
-        vol.Required("days"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        # days is optional — omit (or pass null) for an indefinite pause.
+        # When provided it must be a positive integer.
+        vol.Optional("days"): vol.Any(
+            None,
+            vol.All(vol.Coerce(int), vol.Range(min=1)),
+        ),
     }
 )
 
@@ -181,7 +186,6 @@ async def handle_add_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssist
     )
     if chore.recurrence != RECURRENCE_MANUAL:
         chore.next_due = datetime.utcnow()
-    # Auto-set window days if multi-occurrence and none provided
     if chore.occurrences_required > 1 and chore.occurrence_window_days is None:
         chore.occurrence_window_days = chore.occurrences_required * DEFAULT_WINDOW_DAYS_PER_OCC
 
@@ -235,7 +239,6 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore, hass: HomeA
     now = datetime.utcnow()
     window = store.get_open_window(chore_id)
     if window is None:
-        # Auto-default window: use stored value or fall back to 7 days per occurrence
         window_days = chore.occurrence_window_days or (chore.occurrences_required * DEFAULT_WINDOW_DAYS_PER_OCC)
         window = OccurrenceWindow(
             chore_id=chore_id,
@@ -305,13 +308,17 @@ async def handle_mark_paid(call: ServiceCall, store: HAPMStore, hass: HomeAssist
 
 async def handle_pause_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     chore_id = call.data["chore_id"]
-    days = call.data["days"]
+    # days is optional — None means pause indefinitely
+    days: Optional[int] = call.data.get("days")
     chore = store.get_chore(chore_id)
     if not chore:
         raise HomeAssistantError(f"HAPM: Chore '{chore_id}' not found.")
     await store.async_pause_chore(chore_id, days)
     _fire_data_changed(hass)
-    _LOGGER.info("HAPM: Chore '%s' paused for %d day(s).", chore.name, days)
+    if days is None:
+        _LOGGER.info("HAPM: Chore '%s' paused indefinitely.", chore.name)
+    else:
+        _LOGGER.info("HAPM: Chore '%s' paused for %d day(s).", chore.name, days)
 
 
 async def handle_resume_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
