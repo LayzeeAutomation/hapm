@@ -8,8 +8,8 @@ The resource URL includes a ?v= query string that must be bumped
 whenever the JS file changes so that browsers (especially iOS Safari
 which caches aggressively) fetch the new version.
 
-On fresh installs Lovelace may not be ready when async_setup_entry runs,
-so registration is retried up to REGISTER_RETRIES times.
+Registration is deferred to EVENT_HOMEASSISTANT_STARTED so Lovelace is
+fully initialised — this is the correct pattern for fresh installs.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import logging
 import pathlib
 
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,28 +34,39 @@ REGISTER_RETRY_DELAY = 2  # seconds
 
 
 async def async_register_frontend(hass: HomeAssistant) -> None:
-    """Serve the card JS and register it as a persistent Lovelace resource."""
+    """Serve the card JS and schedule Lovelace resource registration."""
 
     # Serve www/ directory under /hapm_static/
-    # cache_headers=False so HA never sends long-lived Cache-Control headers;
-    # the ?v= query string in CARD_URL is the sole cache-busting mechanism.
+    # cache_headers=False — the ?v= query string is the sole cache-busting mechanism.
     await hass.http.async_register_static_paths(
         [StaticPathConfig("/hapm_static", str(WWW_DIR), cache_headers=False)]
     )
 
-    # Try immediately, then retry in the background if Lovelace isn't ready yet.
-    registered = await _ensure_lovelace_resource(hass)
-    if not registered:
-        hass.async_create_task(_retry_registration(hass))
+    if hass.is_running:
+        # HA already started (e.g. integration reload) — register immediately.
+        registered = await _ensure_lovelace_resource(hass)
+        if not registered:
+            hass.async_create_task(_retry_registration(hass))
+    else:
+        # Fresh start / install — wait until HA has fully booted so that
+        # Lovelace and its resource collection are guaranteed to be ready.
+        async def _on_started(event) -> None:  # noqa: ANN001
+            registered = await _ensure_lovelace_resource(hass)
+            if not registered:
+                hass.async_create_task(_retry_registration(hass))
+
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
 
 
 async def _retry_registration(hass: HomeAssistant) -> None:
-    """Retry resource registration until Lovelace is ready (fresh install / redownload)."""
+    """Retry resource registration until Lovelace is ready."""
     for attempt in range(1, REGISTER_RETRIES + 1):
         await asyncio.sleep(REGISTER_RETRY_DELAY)
-        _LOGGER.debug("HAPM: Retrying Lovelace resource registration (attempt %d/%d)", attempt, REGISTER_RETRIES)
-        registered = await _ensure_lovelace_resource(hass)
-        if registered:
+        _LOGGER.debug(
+            "HAPM: Retrying Lovelace resource registration (attempt %d/%d)",
+            attempt, REGISTER_RETRIES,
+        )
+        if await _ensure_lovelace_resource(hass):
             return
     _LOGGER.warning(
         "HAPM: Could not register Lovelace resource after %d attempts. "
@@ -70,12 +82,15 @@ async def _ensure_lovelace_resource(hass: HomeAssistant) -> bool:
     was not ready yet (caller should retry).
     """
     try:
-        from homeassistant.components.lovelace.resources import ResourceStorageCollection  # noqa: PLC0415
+        # HA stores a LovelaceData *object* at hass.data["lovelace"] —
+        # resources is an attribute, NOT a dict key.
+        lovelace = hass.data.get("lovelace")
+        if lovelace is None:
+            _LOGGER.debug("HAPM: hass.data['lovelace'] not present yet, will retry.")
+            return False
 
-        lovelace_data = hass.data.get("lovelace", {})
-        resources: ResourceStorageCollection | None = lovelace_data.get("resources")
-
-        if resources is None:
+        resources = getattr(lovelace, "resources", None)
+        if resources is None or not hasattr(resources, "async_create_item"):
             _LOGGER.debug("HAPM: Lovelace resource collection not ready yet, will retry.")
             return False
 
@@ -101,9 +116,6 @@ async def _ensure_lovelace_resource(hass: HomeAssistant) -> bool:
         _LOGGER.info("HAPM: Card resource registered at %s", CARD_URL)
         return True
 
-    except ImportError:
-        _LOGGER.warning("HAPM: Could not import lovelace resources module.")
-        return False
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning("HAPM: Unexpected error registering Lovelace resource: %s", err)
         return False
