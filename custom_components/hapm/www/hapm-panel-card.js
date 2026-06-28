@@ -1,5 +1,5 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.3
+ * HAPM Pocket Money Panel Card  v0.1.4
  * A self-contained Lovelace custom card for the HAPM integration.
  *
  * Usage in Lovelace:
@@ -9,8 +9,9 @@
  * so it is completely outside the shadow-DOM re-render cycle.
  */
 
-const HAPM_VERSION = '0.1.3';
+const HAPM_VERSION = '0.1.4';
 const CURRENCY_DEFAULT = '£';
+const OPTIMISTIC_TTL_MS = 15000; // keep optimistic chores for 15s max
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const STYLES = `
@@ -157,7 +158,6 @@ const MODAL_STYLES = `
   .hapm-modal-row .hapm-modal-input,
   .hapm-modal-row .hapm-modal-select { margin-bottom: 0; }
   .hapm-modal-row-wrap { margin-bottom: 12px; }
-  /* Child checkboxes */
   .hapm-children-list { display: flex; flex-direction: column; gap: 0;
     border: 1.5px solid #ddd; border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
   .hapm-child-checkbox-row { display: flex; align-items: center; gap: 10px;
@@ -168,7 +168,6 @@ const MODAL_STYLES = `
     flex-shrink: 0; cursor: pointer; margin: 0; }
   .hapm-child-checkbox-label { font-size: 15px; font-weight: 500; flex: 1; cursor: pointer; }
   .hapm-child-dot { width: 9px; height: 9px; border-radius: 9999px; flex-shrink: 0; }
-  /* Actions */
   .hapm-modal-actions { display: flex; gap: 10px; margin-top: 4px; }
   .hapm-modal-btn { flex: 1; padding: 13px; border-radius: 12px; font-size: 15px;
     font-weight: 700; cursor: pointer; border: none; font-family: inherit; }
@@ -176,7 +175,7 @@ const MODAL_STYLES = `
   .hapm-modal-btn-submit { background: #01696f; color: #fff; }
 `;
 
-// ── Colour / icon maps ───────────────────────────────────────────────────────
+// ── Colour / icon maps ────────────────────────────────────────────────────────
 const COLOUR_MAP = {
   teal: '#01696f', blue: '#5591c7', purple: '#7c63d1',
   orange: '#fdab43', gold: '#e8af34', green: '#6daa45',
@@ -254,11 +253,9 @@ function _buildModal() {
     </div>
   `;
   document.body.appendChild(backdrop);
-
   backdrop.addEventListener('click', e => { if (e.target === backdrop) _closeModal(); });
   document.getElementById('hm-cancel').addEventListener('click', _closeModal);
   document.getElementById('hm-submit').addEventListener('click', _submitModal);
-
   return backdrop;
 }
 
@@ -272,28 +269,20 @@ function _submitModal() {
   const value = parseFloat(document.getElementById('hm-value').value);
   const recur = document.getElementById('hm-recur').value;
   const occ   = parseInt(document.getElementById('hm-occ').value) || 1;
-
-  // Collect checked child IDs
   const checked = [...document.querySelectorAll('#hm-children-list input[type=checkbox]:checked')];
   const assignedTo = checked.map(cb => cb.value);
-
   if (!name || !value) { document.getElementById('hm-name').focus(); return; }
-  if (!assignedTo.length) { return; }  // must have at least one child selected
-
+  if (!assignedTo.length) return;
   if (_hapmModalCallback) _hapmModalCallback({ name, value, recur, occ, assignedTo });
   _closeModal();
 }
 
 function _openModal(children, activeChildId, callback) {
   const modal = _getModal();
-
-  // Reset fields
   document.getElementById('hm-name').value  = '';
   document.getElementById('hm-value').value = '';
   document.getElementById('hm-recur').value = 'weekly';
   document.getElementById('hm-occ').value   = '1';
-
-  // Rebuild child checkboxes from live children list
   const list = document.getElementById('hm-children-list');
   list.innerHTML = children.map(c => `
     <label class="hapm-child-checkbox-row">
@@ -303,7 +292,6 @@ function _openModal(children, activeChildId, callback) {
       <span class="hapm-child-checkbox-label">${esc(c.childName)}</span>
     </label>
   `).join('');
-
   _hapmModalCallback = callback;
   modal.classList.remove('hidden');
   setTimeout(() => document.getElementById('hm-name').focus(), 80);
@@ -325,7 +313,7 @@ class HapmPanelCard extends HTMLElement {
     this._view = 'chores';
     this._holidayMode = false;
     this._children = [];
-    // Optimistic chores: keyed by childEntryId, cleared when sensor updates
+    // { [childEntryId]: [{ ...chore, _optimistic: true, _expiresAt: timestamp }] }
     this._optimisticChores = {};
   }
 
@@ -339,8 +327,10 @@ class HapmPanelCard extends HTMLElement {
 
   _syncFromHass() {
     if (!this._hass) return;
+    const now = Date.now();
     const states = this._hass.states;
     const children = [];
+
     for (const [entityId, state] of Object.entries(states)) {
       if (!entityId.startsWith('sensor.') || !entityId.endsWith('_pocket_money_balance')) continue;
       const attrs = state.attributes || {};
@@ -351,18 +341,26 @@ class HapmPanelCard extends HTMLElement {
       const balance = parseFloat(state.state) || 0;
       const dueSensorId = entityId.replace('_pocket_money_balance', '_chores_due');
       const serverChores = states[dueSensorId]?.attributes?.due_chores || [];
-
-      // Merge optimistic chores: keep optimistic ones not yet in server list
-      const optimistic = (this._optimisticChores[childEntryId] || []).filter(
-        o => !serverChores.find(s => s.name === o.name)
-      );
-      // Once server has caught up with all optimistic, clear them
-      if (!optimistic.length) delete this._optimisticChores[childEntryId];
-
-      const dueChores = [...serverChores, ...optimistic];
       const lastPaid = attrs.last_paid || null;
+
+      // Keep optimistic chores that:
+      // 1. Haven't expired (within TTL), AND
+      // 2. Haven't been confirmed by the server yet (matched by name)
+      const pending = this._optimisticChores[childEntryId] || [];
+      const stillPending = pending.filter(o =>
+        now < o._expiresAt && !serverChores.find(s => s.name === o.name)
+      );
+      // Update stored list (drop expired / confirmed)
+      if (stillPending.length) {
+        this._optimisticChores[childEntryId] = stillPending;
+      } else {
+        delete this._optimisticChores[childEntryId];
+      }
+
+      const dueChores = [...serverChores, ...stillPending];
       children.push({ childEntryId, childName, colour, currency, balance, dueChores, lastPaid });
     }
+
     if (children.length) {
       this._children = children;
       if (!this._activeChildId || !children.find(c => c.childEntryId === this._activeChildId)) {
@@ -375,11 +373,6 @@ class HapmPanelCard extends HTMLElement {
     if (!this._hass) return;
     try {
       await this._hass.callService('hapm', service, data);
-      // Wait 2s for sensor to update then re-sync
-      setTimeout(() => {
-        this._syncFromHass();
-        this._render();
-      }, 2000);
     } catch (e) {
       console.error('HAPM card service error', service, e);
     }
@@ -547,21 +540,22 @@ class HapmPanelCard extends HTMLElement {
         break;
       case 'open-add-form':
         _openModal(this._children, this._activeChildId, ({ name, value, recur, occ, assignedTo }) => {
-          // Optimistically add chore to each assigned child immediately
+          const expiresAt = Date.now() + OPTIMISTIC_TTL_MS;
           const optimisticChore = {
             id: '_opt_' + Date.now(),
             name, value, recurrence: recur,
             occurrences_required: occ,
             _optimistic: true,
+            _expiresAt: expiresAt,
           };
+          // Store optimistic chore — NOT cleared by _syncFromHass until TTL or server confirms
           assignedTo.forEach(childId => {
             if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
-            this._optimisticChores[childId].push(optimisticChore);
+            this._optimisticChores[childId].push({ ...optimisticChore });
           });
           this._syncFromHass();
           this._render();
 
-          // Call the service
           this._callService('add_chore', {
             name, value,
             recurrence: recur,
@@ -572,8 +566,8 @@ class HapmPanelCard extends HTMLElement {
         });
         break;
       case 'complete':
-        this._callService('complete_chore', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
         el.closest('.chore-card')?.classList.add('completing');
+        this._callService('complete_chore', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
         break;
       case 'log-occ':
         this._callService('log_occurrence', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
