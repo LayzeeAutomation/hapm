@@ -1,16 +1,14 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.23
+ * HAPM Pocket Money Panel Card  v0.1.24
  *
- * Changes vs 0.1.22:
- *   - category is now a first-class field on the Chore model (no more getattr hack)
- *   - sensor now exposes complete_chores attribute (non-due, non-paused chores)
- *   - New "All" nav tab shows every chore for the active child with edit + pause actions
- *     so you can manage chores at any time, not just when they're due
- *   - Weekly chores now calendar-align to Monday; monthly to the 1st
- *   - Missed recurring chores silently roll forward instead of stacking
+ * Changes vs 0.1.23:
+ *   - Edit modal now has a 🗑 Delete Chore button at the bottom
+ *   - Tapping Delete shows an inline confirmation ("Are you sure?") with
+ *     Cancel and Confirm Delete buttons to prevent accidents
+ *   - Confirmed delete calls the hapm.delete_chore service and closes the modal
  */
 
-const HAPM_VERSION = '0.1.23';
+const HAPM_VERSION = '0.1.24';
 const CURRENCY_DEFAULT = '\u00a3';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -258,6 +256,21 @@ const STYLES = `
   .hapm-btn-cancel { background:var(--secondary-background-color,#3a3a3c);
     color:var(--primary-text-color); }
   .hapm-btn-ok { background:#01696f; color:#fff; }
+  .hapm-btn-delete { background:transparent; border:1.5px solid #db4437;
+    color:#db4437; width:100%; padding:13px; border-radius:12px; font-size:15px;
+    font-weight:700; cursor:pointer; font-family:inherit; margin-top:10px;
+    transition:all 150ms; }
+  .hapm-btn-delete:hover { background:#db4437; color:#fff; }
+  .hapm-btn-confirm-delete { background:#db4437; color:#fff; }
+
+  /* delete confirm zone */
+  .hapm-delete-confirm { display:none; margin-top:12px;
+    background:rgba(219,68,55,0.08); border:1.5px solid #db4437;
+    border-radius:12px; padding:14px; }
+  .hapm-delete-confirm.visible { display:block; }
+  .hapm-delete-confirm-msg { font-size:13px; color:#db4437; font-weight:600;
+    margin-bottom:12px; text-align:center; }
+  .hapm-delete-confirm-actions { display:flex; gap:10px; }
 
   .hapm-multi-row  { display:none; margin-bottom:12px; }
   .hapm-multi-row.visible  { display:block; }
@@ -347,9 +360,9 @@ class HapmPanelCard extends HTMLElement {
       const rawBalance   = parseFloat(state.state) || 0;
       const dueSensorId  = entityId.replace('_pocket_money_balance','_chores_due');
       const dueSensor    = states[dueSensorId];
-      const serverChores    = dueSensor?.attributes?.due_chores    || [];
-      const pausedChores    = dueSensor?.attributes?.paused_chores || [];
-      const completeChores  = dueSensor?.attributes?.complete_chores || [];
+      const serverChores   = dueSensor?.attributes?.due_chores     || [];
+      const pausedChores   = dueSensor?.attributes?.paused_chores  || [];
+      const completeChores = dueSensor?.attributes?.complete_chores || [];
       const lastPaid     = attrs.last_paid || null;
       const ledger       = attrs.ledger || [];
       const optimistic   = this._optimisticChores[childEntryId] || [];
@@ -569,6 +582,15 @@ class HapmPanelCard extends HTMLElement {
             <button class="hapm-btn hapm-btn-cancel" id="m-edit-cancel">Cancel</button>
             <button class="hapm-btn hapm-btn-ok"     id="m-edit-submit">Save Changes</button>
           </div>
+          <!-- Delete section -->
+          <button class="hapm-btn-delete" id="m-edit-delete">\ud83d\uddd1\ufe0f Delete Chore</button>
+          <div class="hapm-delete-confirm" id="m-edit-delete-confirm">
+            <div class="hapm-delete-confirm-msg">Are you sure? This cannot be undone.</div>
+            <div class="hapm-delete-confirm-actions">
+              <button class="hapm-btn hapm-btn-cancel" id="m-edit-delete-cancel">Cancel</button>
+              <button class="hapm-btn hapm-btn-confirm-delete" id="m-edit-delete-confirm-btn">Yes, Delete</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -708,14 +730,13 @@ class HapmPanelCard extends HTMLElement {
 
   _allChoresPanelHTML(child) {
     if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.</div>`;
-    const due     = child.dueChores     || [];
-    const paused  = child.pausedChores  || [];
+    const due      = child.dueChores     || [];
+    const paused   = child.pausedChores  || [];
     const complete = child.completeChores || [];
-    const total   = due.length + paused.length + complete.length;
+    const total    = due.length + paused.length + complete.length;
     if (!total) return `<div class="empty"><div class="empty-icon">\ud83d\udccb</div>No chores yet.<br>Tap + Add Chore to get started.</div>`;
 
     const sections = [];
-
     if (due.length) {
       sections.push(`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--secondary-text-color);margin-bottom:8px;margin-top:4px">Due Now (${due.length})</div>`);
       sections.push(...due.map(c => this._allChoreCardHTML(c, child, 'due')));
@@ -728,7 +749,6 @@ class HapmPanelCard extends HTMLElement {
       sections.push(`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--secondary-text-color);margin-bottom:8px;margin-top:12px">Done / Not Yet Due (${complete.length})</div>`);
       sections.push(...complete.map(c => this._allChoreCardHTML(c, child, 'complete')));
     }
-
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <strong style="font-size:13px">All Chores (${total})</strong>
@@ -917,6 +937,7 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
+    // ── Add modal ──
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value)||1;
@@ -962,7 +983,11 @@ class HapmPanelCard extends HTMLElement {
         category, assigned_to:assigned, ...(desc?{description:desc}:{}) });
     });
 
-    sr.getElementById('m-edit-cancel')?.addEventListener('click', () => this._closeModal('modal-edit'));
+    // ── Edit modal ──
+    sr.getElementById('m-edit-cancel')?.addEventListener('click', () => {
+      sr.getElementById('m-edit-delete-confirm')?.classList.remove('visible');
+      this._closeModal('modal-edit');
+    });
     sr.getElementById('e-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('e-occ').value)||1;
       sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ>1);
@@ -978,11 +1003,30 @@ class HapmPanelCard extends HTMLElement {
       const category= sr.getElementById('e-category').value||DEFAULT_CATEGORY;
       const payMode = occ>1?(sr.getElementById('e-paymode').value||'per_occurrence'):'per_occurrence';
       if (!name||!value) { if(!name) sr.getElementById('e-name').focus(); return; }
+      sr.getElementById('m-edit-delete-confirm')?.classList.remove('visible');
       this._closeModal('modal-edit');
       this._callService('update_chore', { chore_id:choreId, name, value, recurrence:recur,
         occurrences_required:occ, pay_mode:payMode, category, description:desc||null });
     });
 
+    // Delete button — show confirm zone
+    sr.getElementById('m-edit-delete')?.addEventListener('click', () => {
+      sr.getElementById('m-edit-delete-confirm')?.classList.add('visible');
+      sr.getElementById('m-edit-delete')?.scrollIntoView({ behavior:'smooth', block:'nearest' });
+    });
+    // Cancel confirm
+    sr.getElementById('m-edit-delete-cancel')?.addEventListener('click', () => {
+      sr.getElementById('m-edit-delete-confirm')?.classList.remove('visible');
+    });
+    // Confirm delete
+    sr.getElementById('m-edit-delete-confirm-btn')?.addEventListener('click', () => {
+      const choreId = sr.getElementById('modal-edit').dataset.choreId;
+      sr.getElementById('m-edit-delete-confirm')?.classList.remove('visible');
+      this._closeModal('modal-edit');
+      this._callService('delete_chore', { chore_id: choreId });
+    });
+
+    // ── Holiday modal ──
     sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
     sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
       const days = parseInt(sr.getElementById('m-holiday-days').value)||7;
@@ -992,6 +1036,7 @@ class HapmPanelCard extends HTMLElement {
       this._callService('set_holiday_mode', {days}); this._updateDOM();
     });
 
+    // ── Pay modal ──
     sr.getElementById('m-pay-cancel')?.addEventListener('click', () => this._closeModal('modal-pay'));
     sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
       const child = this._activeChild; if (!child) return;
@@ -1001,6 +1046,7 @@ class HapmPanelCard extends HTMLElement {
       this._callService('mark_paid', {child_entry_id:child.childEntryId});
     });
 
+    // ── Pause modal ──
     sr.getElementById('m-pause-cancel')?.addEventListener('click', () => this._closeModal('modal-pause'));
     sr.getElementById('m-pause-submit')?.addEventListener('click', () => {
       const choreId = sr.getElementById('modal-pause').dataset.choreId;
@@ -1058,6 +1104,8 @@ class HapmPanelCard extends HTMLElement {
         sr.getElementById('e-occ').value=occ;
         sr.getElementById('e-paymode').value=chore.pay_mode||'per_occurrence';
         sr.getElementById('e-paymode-row')?.classList.toggle('visible',occ>1);
+        // always hide confirm zone when opening
+        sr.getElementById('m-edit-delete-confirm')?.classList.remove('visible');
         this._openModal('modal-edit');
         setTimeout(()=>sr.getElementById('e-name')?.focus(),80);
         break;
