@@ -37,6 +37,7 @@ _LOGGER = logging.getLogger(__name__)
 
 SERVICE_ADD_CHORE          = "add_chore"
 SERVICE_UPDATE_CHORE       = "update_chore"
+SERVICE_DELETE_CHORE       = "delete_chore"
 SERVICE_COMPLETE_CHORE     = "complete_chore"
 SERVICE_LOG_OCCURRENCE     = "log_occurrence"
 SERVICE_MARK_PAID          = "mark_paid"
@@ -81,6 +82,12 @@ SCHEMA_UPDATE_CHORE = vol.Schema(
             [PAY_MODE_PER_OCCURRENCE, PAY_MODE_ON_COMPLETION]
         ),
         vol.Optional("category"): cv.string,
+    }
+)
+
+SCHEMA_DELETE_CHORE = vol.Schema(
+    {
+        vol.Required("chore_id"): cv.string,
     }
 )
 
@@ -283,6 +290,16 @@ async def handle_update_chore(call: ServiceCall, store: HAPMStore, hass: HomeAss
     _LOGGER.info("HAPM: Updated chore '%s' (id=%s)", chore.name, chore_id)
 
 
+async def handle_delete_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
+    chore_id = call.data["chore_id"]
+    chore = store.get_chore(chore_id)
+    if not chore:
+        raise HomeAssistantError(f"HAPM: Chore '{chore_id}' not found.")
+    await store.async_delete_chore(chore_id)
+    _fire_data_changed(hass)
+    _LOGGER.info("HAPM: Deleted chore '%s' (id=%s)", chore.name, chore_id)
+
+
 async def handle_complete_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
     chore_id = call.data["chore_id"]
     child_entry_id = call.data["child_entry_id"]
@@ -445,6 +462,7 @@ def async_register_services(hass: HomeAssistant) -> None:
 
     async def _add_chore(call):    await handle_add_chore(call, _get_store(), hass)
     async def _update_chore(call): await handle_update_chore(call, _get_store(), hass)
+    async def _delete_chore(call): await handle_delete_chore(call, _get_store(), hass)
     async def _complete_chore(call): await handle_complete_chore(call, _get_store(), hass)
     async def _log_occurrence(call): await handle_log_occurrence(call, _get_store(), hass)
     async def _mark_paid(call):    await handle_mark_paid(call, _get_store(), hass)
@@ -455,6 +473,7 @@ def async_register_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(DOMAIN, SERVICE_ADD_CHORE,       _add_chore,    schema=SCHEMA_ADD_CHORE)
     hass.services.async_register(DOMAIN, SERVICE_UPDATE_CHORE,    _update_chore, schema=SCHEMA_UPDATE_CHORE)
+    hass.services.async_register(DOMAIN, SERVICE_DELETE_CHORE,    _delete_chore, schema=SCHEMA_DELETE_CHORE)
     hass.services.async_register(DOMAIN, SERVICE_COMPLETE_CHORE,  _complete_chore, schema=SCHEMA_COMPLETE_CHORE)
     hass.services.async_register(DOMAIN, SERVICE_LOG_OCCURRENCE,  _log_occurrence, schema=SCHEMA_LOG_OCCURRENCE)
     hass.services.async_register(DOMAIN, SERVICE_MARK_PAID,       _mark_paid,    schema=SCHEMA_MARK_PAID)

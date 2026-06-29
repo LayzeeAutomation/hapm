@@ -160,6 +160,17 @@ update_chore:
             - per_occurrence
             - on_completion
 
+delete_chore:
+  name: Delete Chore
+  description: Permanently delete a chore. This cannot be undone.
+  fields:
+    chore_id:
+      name: Chore ID
+      description: The ID of the chore to delete.
+      required: true
+      selector:
+        text:
+
 complete_chore:
   name: Complete Chore
   description: Mark a standard single-occurrence chore as complete and credit the child's balance.
