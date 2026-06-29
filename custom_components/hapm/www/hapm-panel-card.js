@@ -1,16 +1,15 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.17
+ * HAPM Pocket Money Panel Card  v0.1.18
  *
- * Changes vs 0.1.16:
- *   1. Removed "Completion window (days)" field from Add and Edit modals.
- *      The window is now auto-derived from recurrence in services.py:
- *      daily=1d, weekly=7d, monthly=30d, manual=occurrences*7d.
- *   2. When occurrences > 1, a "Pay mode" selector appears:
- *      - "Per occurrence" — equal share of total value credited each time
- *      - "All at once" — full value credited only when all occurrences done
+ * Changes vs 0.1.17:
+ *   1. Fix description not showing on due chore cards — guarded against
+ *      null/undefined coming back from sensor attribute.
+ *   2. Fix description not pre-filling in edit modal — same null guard,
+ *      plus pay_mode and description now reliably round-trip via chore JSON.
+ *   3. frontend.py + manifest bumped to 0.1.18 so HA auto-updates resource URL.
  */
 
-const HAPM_VERSION = '0.1.17';
+const HAPM_VERSION = '0.1.18';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -46,6 +45,8 @@ function fmtPausedUntil(isoUntil) {
   const d = new Date(isoUntil);
   return 'Until ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
+// Safely get description string — sensor may return null/undefined/empty
+function getDesc(c) { return (c.description && c.description.trim()) ? c.description.trim() : ''; }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const STYLES = `
@@ -567,6 +568,7 @@ class HapmPanelCard extends HTMLElement {
 
   _pausedCardHTML(c, child) {
     const label = fmtPausedUntil(c.paused_until);
+    const desc  = getDesc(c);
     const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card paused-card">
       <div>
@@ -574,7 +576,7 @@ class HapmPanelCard extends HTMLElement {
           <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
           <div>
             <div class="chore-name">${esc(c.name)}</div>
-            ${c.description ? `<div class="chore-desc">${esc(c.description)}</div>` : ''}
+            ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
             <div class="chore-meta">
               <span class="pill pill-paused">⏸ ${esc(label)}</span>
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
@@ -593,6 +595,7 @@ class HapmPanelCard extends HTMLElement {
   _choreCardHTML(c, child) {
     const isMulti = c.occurrences_required > 1;
     const isOpt   = !!c._optimistic;
+    const desc     = getDesc(c);
     const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card${isOpt ? ' optimistic' : ''}">
       <div>
@@ -600,7 +603,7 @@ class HapmPanelCard extends HTMLElement {
           <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
           <div>
             <div class="chore-name">${esc(c.name)}${isOpt ? ' <span style="font-size:10px;opacity:0.5">(saving…)</span>' : ''}</div>
-            ${c.description ? `<div class="chore-desc">${esc(c.description)}</div>` : ''}
+            ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
             <div class="chore-meta">
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
               ${isMulti ? `<span class="pill pill-multi">0/${c.occurrences_required}×</span>` : ''}
@@ -656,6 +659,7 @@ class HapmPanelCard extends HTMLElement {
     });
     sr.getElementById('m-add-submit')?.addEventListener('click', () => {
       const name    = sr.getElementById('m-name').value.trim();
+      const desc    = sr.getElementById('m-desc').value.trim();
       const value   = parseFloat(sr.getElementById('m-value').value);
       const recur   = sr.getElementById('m-recur').value || 'manual';
       const occ     = parseInt(sr.getElementById('m-occ').value) || 1;
@@ -671,8 +675,9 @@ class HapmPanelCard extends HTMLElement {
       assigned.forEach(childId => {
         if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
         this._optimisticChores[childId].push({
-          id: '_opt_' + Date.now(), name, value, recurrence: recur,
-          occurrences_required: occ, _optimistic: true, _expiresAt: expiresAt,
+          id: '_opt_' + Date.now(), name, description: desc || null, value,
+          recurrence: recur, occurrences_required: occ,
+          _optimistic: true, _expiresAt: expiresAt,
         });
       });
       this._syncFromHass();
@@ -681,6 +686,7 @@ class HapmPanelCard extends HTMLElement {
         name, value, recurrence: recur, occurrences_required: occ, pay_mode: payMode,
         assignment_mode: assigned.length === this._children.length ? 'team' : 'individual',
         assigned_to: assigned,
+        ...(desc ? { description: desc } : {}),
       });
     });
 
@@ -706,7 +712,8 @@ class HapmPanelCard extends HTMLElement {
       this._closeModal('modal-edit');
       this._callService('update_chore', {
         chore_id: choreId, name, value, recurrence: recur,
-        occurrences_required: occ, pay_mode: payMode, description: desc || null,
+        occurrences_required: occ, pay_mode: payMode,
+        description: desc || null,
       });
     });
 
@@ -785,7 +792,7 @@ class HapmPanelCard extends HTMLElement {
         const modal = sr.getElementById('modal-edit');
         modal.dataset.choreId = chore.id;
         sr.getElementById('e-name').value    = chore.name  || '';
-        sr.getElementById('e-desc').value    = chore.description || '';
+        sr.getElementById('e-desc').value    = getDesc(chore);
         sr.getElementById('e-value').value   = chore.value || '';
         sr.getElementById('e-recur').value   = chore.recurrence || 'manual';
         const occ = chore.occurrences_required || 1;
