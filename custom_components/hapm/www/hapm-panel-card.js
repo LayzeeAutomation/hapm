@@ -1,16 +1,14 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.25
+ * HAPM Pocket Money Panel Card  v0.1.26
  *
- * Changes vs 0.1.24:
- *   - Fix: open-edit was silently breaking because data-chore-json was
- *     HTML-escaped (& quot; etc.) so JSON.parse always threw and the handler
- *     hit `catch { break }` — meaning choreId was never set on the modal,
- *     so both Save and Delete did nothing / reported "cannot find chore".
- *   - Fix: replaced data-chore-json with individual data-* scalar attributes
- *     on every Edit button — no JSON parsing needed at all.
+ * Changes vs 0.1.25:
+ *   - Ledger tab renamed to 'Logs'
+ *   - Chore completed / occurrence logged rows: main text = chore name,
+ *     subtext = event label (e.g. 'Occurrence logged')
+ *   - Payment made rows: main text = 'Paid out', subtext = amount paid
  */
 
-const HAPM_VERSION = '0.1.25';
+const HAPM_VERSION = '0.1.26';
 const CURRENCY_DEFAULT = '\u00a3';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -207,7 +205,7 @@ const STYLES = `
     background:var(--success-color,#6daa45); color:#fff; border:none;
     border-radius:10px; font-family:inherit; font-weight:700; cursor:pointer; }
 
-  /* ── Ledger ── */
+  /* ── Logs (ledger) ── */
   .ledger-header { display:flex; justify-content:space-between; align-items:baseline;
     margin-bottom:12px; }
   .ledger-balance { font-size:13px; color:var(--secondary-text-color); }
@@ -465,7 +463,7 @@ class HapmPanelCard extends HTMLElement {
         <button class="nav-btn active" id="nav-chores">Chores<span class="badge" id="nav-badge" style="display:none"></span></button>
         <button class="nav-btn" id="nav-paused">Paused<span class="badge badge-warn" id="nav-paused-badge" style="display:none"></span></button>
         <button class="nav-btn" id="nav-all">All Chores</button>
-        <button class="nav-btn" id="nav-ledger">Ledger</button>
+        <button class="nav-btn" id="nav-ledger">Logs</button>
       </div>
       <div class="panel" id="panel"></div>`;
     sr.appendChild(card);
@@ -908,13 +906,28 @@ class HapmPanelCard extends HTMLElement {
     let running = 0;
     const runningBalances = reversed.map(e => { running += e.amount; return running; });
     runningBalances.reverse();
-    const rows = entries.map((e,i) => {
+    const rows = entries.map((e, i) => {
       const meta   = ledgerMeta(e.event_type);
       const isEarn = e.amount > 0;
+      const isPay  = e.event_type === 'payment_made';
+
+      // Main label: chore name (from note) for earned events; 'Paid out' for payments
+      // Subtext: event type label for earned events; amount for payments
+      let mainLabel, subLabel;
+      if (isPay) {
+        mainLabel = 'Paid out';
+        subLabel  = fmtMoney(Math.abs(e.amount), child.currency);
+      } else {
+        // note holds the chore name (set by backend); fall back to meta label
+        mainLabel = e.note ? esc(e.note) : esc(meta.label);
+        subLabel  = esc(meta.label);
+      }
+
       return `<div class="ledger-row">
         <div class="ledger-icon">${meta.icon}</div>
         <div>
-          <div class="ledger-label">${e.note ? esc(e.note) : esc(meta.label)}</div>
+          <div class="ledger-label">${mainLabel}</div>
+          <div class="ledger-note">${subLabel}</div>
           <div class="ledger-time">${fmtDate(e.timestamp)}</div>
         </div>
         <div class="ledger-amount ${isEarn?'earn':'pay'}">${fmtMoneyRaw(e.amount, child.currency)}</div>
