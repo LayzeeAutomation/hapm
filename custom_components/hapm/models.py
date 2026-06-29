@@ -16,7 +16,6 @@ from .const import (
 
 
 def _new_id() -> str:
-    """Generate a new UUID string."""
     return str(uuid.uuid4())
 
 
@@ -26,34 +25,32 @@ class Chore:
 
     name: str
     value: float
-    assigned_to: list[str]  # list of config entry IDs
+    assigned_to: list[str]
 
     id: str = field(default_factory=_new_id)
     description: Optional[str] = None
+    category: str = "tidying"
     recurrence: str = RECURRENCE_MANUAL
-    interval: int = 1  # e.g. every 2 weeks
+    interval: int = 1
     enabled: bool = True
     paused_until: Optional[datetime] = None
 
-    # Multi-occurrence support
     occurrences_required: int = 1
-    occurrence_window_days: Optional[int] = None  # None = standard single chore
+    occurrence_window_days: Optional[int] = None
 
-    # Pay configuration
     pay_mode: str = PAY_MODE_PER_OCCURRENCE
     assignment_mode: str = ASSIGNMENT_MODE_INDIVIDUAL
-    pay_split_mode: str = PAY_SPLIT_FULL  # only relevant for team chores
+    pay_split_mode: str = PAY_SPLIT_FULL
 
-    # Schedule tracking
     last_completed: Optional[datetime] = None
     next_due: Optional[datetime] = None
 
     def to_dict(self) -> dict:
-        """Serialise to a JSON-safe dict for storage."""
         return {
             "id": self.id,
             "name": self.name,
             "description": self.description,
+            "category": self.category,
             "value": self.value,
             "assigned_to": self.assigned_to,
             "recurrence": self.recurrence,
@@ -71,11 +68,11 @@ class Chore:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Chore":
-        """Deserialise from storage dict."""
         return cls(
             id=data["id"],
             name=data["name"],
             description=data.get("description"),
+            category=data.get("category", "tidying"),
             value=data["value"],
             assigned_to=data["assigned_to"],
             recurrence=data.get("recurrence", RECURRENCE_MANUAL),
@@ -98,16 +95,15 @@ class LedgerEvent:
 
     event_type: str
     child_entry_id: str
-    amount: float  # positive = earned, negative = reversal
+    amount: float
 
     id: str = field(default_factory=_new_id)
     chore_id: Optional[str] = None
-    occurrence_number: Optional[int] = None  # e.g. 2 of 3
+    occurrence_number: Optional[int] = None
     timestamp: datetime = field(default_factory=datetime.utcnow)
     note: Optional[str] = None
 
     def to_dict(self) -> dict:
-        """Serialise to a JSON-safe dict for storage."""
         return {
             "id": self.id,
             "event_type": self.event_type,
@@ -121,7 +117,6 @@ class LedgerEvent:
 
     @classmethod
     def from_dict(cls, data: dict) -> "LedgerEvent":
-        """Deserialise from storage dict."""
         return cls(
             id=data["id"],
             event_type=data["event_type"],
@@ -145,21 +140,17 @@ class OccurrenceWindow:
 
     id: str = field(default_factory=_new_id)
     completions: list[dict] = field(default_factory=list)
-    # Each completion: {"child_id": str, "timestamp": str, "occurrence_number": int}
     status: str = OCCURRENCE_STATUS_IN_PROGRESS
 
     @property
     def total_completed(self) -> int:
-        """Return number of completions logged so far."""
         return len(self.completions)
 
     @property
     def is_complete(self) -> bool:
-        """Return True if all required occurrences have been logged."""
         return self.total_completed >= self.total_required
 
     def to_dict(self) -> dict:
-        """Serialise to a JSON-safe dict for storage."""
         return {
             "id": self.id,
             "chore_id": self.chore_id,
@@ -172,7 +163,6 @@ class OccurrenceWindow:
 
     @classmethod
     def from_dict(cls, data: dict) -> "OccurrenceWindow":
-        """Deserialise from storage dict."""
         return cls(
             id=data["id"],
             chore_id=data["chore_id"],
@@ -190,12 +180,8 @@ class GlobalState:
 
     holiday_mode: bool = False
     holiday_paused_until: Optional[datetime] = None
-    # Holiday mode acts like a global pause_until.
-    # Stored separately from per-chore paused_until so individual pauses
-    # are preserved and respected after holiday mode is lifted.
 
     def to_dict(self) -> dict:
-        """Serialise to a JSON-safe dict for storage."""
         return {
             "holiday_mode": self.holiday_mode,
             "holiday_paused_until": self.holiday_paused_until.isoformat() if self.holiday_paused_until else None,
@@ -203,7 +189,6 @@ class GlobalState:
 
     @classmethod
     def from_dict(cls, data: dict) -> "GlobalState":
-        """Deserialise from storage dict."""
         return cls(
             holiday_mode=data.get("holiday_mode", False),
             holiday_paused_until=datetime.fromisoformat(data["holiday_paused_until"]) if data.get("holiday_paused_until") else None,

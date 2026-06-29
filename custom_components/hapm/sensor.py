@@ -34,7 +34,7 @@ async def async_setup_entry(
 ) -> None:
     store: HAPMStore = hass.data[DOMAIN][DATA_STORE]
     child_name = entry.data[CONF_CHILD_NAME]
-    currency = entry.data.get(CONF_CURRENCY_SYMBOL, "£")
+    currency = entry.data.get(CONF_CURRENCY_SYMBOL, "\u00a3")
     colour = entry.data.get(CONF_AVATAR_COLOUR, "teal")
 
     balance_sensor = HAPMBalanceSensor(
@@ -51,7 +51,7 @@ class HAPMBalanceSensor(SensorEntity):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_should_poll = False
 
-    def __init__(self, hass: HomeAssistant, store: HAPMStore, child_entry_id: str, child_name: str, currency: str, colour: str) -> None:
+    def __init__(self, hass, store, child_entry_id, child_name, currency, colour):
         self._hass = hass
         self._store = store
         self._child_entry_id = child_entry_id
@@ -80,7 +80,7 @@ class HAPMBalanceSensor(SensorEntity):
         self.async_write_ha_state()
 
     @callback
-    async def _async_update_and_write(self, _now: datetime) -> None:
+    async def _async_update_and_write(self, _now) -> None:
         self.async_write_ha_state()
 
     @property
@@ -115,7 +115,7 @@ class HAPMChoresDueSensor(SensorEntity):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_should_poll = False
 
-    def __init__(self, hass: HomeAssistant, store: HAPMStore, child_entry_id: str, child_name: str, colour: str) -> None:
+    def __init__(self, hass, store, child_entry_id, child_name, colour):
         self._hass = hass
         self._store = store
         self._child_entry_id = child_entry_id
@@ -143,7 +143,7 @@ class HAPMChoresDueSensor(SensorEntity):
         self.async_write_ha_state()
 
     @callback
-    async def _async_update_and_write(self, _now: datetime) -> None:
+    async def _async_update_and_write(self, _now) -> None:
         self.async_write_ha_state()
 
     def _serialize_chore(self, c) -> dict:
@@ -153,6 +153,7 @@ class HAPMChoresDueSensor(SensorEntity):
             "value": c.value,
             "recurrence": c.recurrence,
             "next_due": c.next_due.isoformat() if c.next_due else None,
+            "last_completed": c.last_completed.isoformat() if c.last_completed else None,
             "occurrences_required": c.occurrences_required,
             "occurrences_completed": (
                 self._store.get_open_window(c.id).total_completed
@@ -160,16 +161,15 @@ class HAPMChoresDueSensor(SensorEntity):
                 else 0
             ),
             "description": c.description,
+            "category": c.category,
             "pay_mode": c.pay_mode,
-            "assignment_mode": getattr(c, "assignment_mode", "individual"),
-            "pay_split_mode": getattr(c, "pay_split_mode", "full"),
-            "category": getattr(c, "category", None),
+            "assignment_mode": c.assignment_mode,
+            "pay_split_mode": c.pay_split_mode,
             "paused_until": c.paused_until.isoformat() if c.paused_until else None,
-            "last_completed": c.last_completed.isoformat() if c.last_completed else None,
             "enabled": c.enabled,
         }
 
-    def _get_due_chores(self) -> list:
+    def _get_due_chores(self):
         now = datetime.utcnow()
         due = []
         for chore in self._store.get_chores():
@@ -183,7 +183,7 @@ class HAPMChoresDueSensor(SensorEntity):
             due.append(chore)
         return due
 
-    def _get_paused_chores(self) -> list:
+    def _get_paused_chores(self):
         paused = []
         for chore in self._store.get_chores():
             if self._child_entry_id not in chore.assigned_to:
@@ -194,15 +194,11 @@ class HAPMChoresDueSensor(SensorEntity):
                 paused.append(chore)
         return paused
 
-    def _get_all_chores(self) -> list:
-        all_chores = []
-        for chore in self._store.get_chores():
-            if self._child_entry_id not in chore.assigned_to:
-                continue
-            if not chore.enabled:
-                continue
-            all_chores.append(chore)
-        return all_chores
+    def _get_all_chores(self):
+        return [
+            c for c in self._store.get_chores()
+            if self._child_entry_id in c.assigned_to and c.enabled
+        ]
 
     @property
     def native_value(self) -> int:
@@ -210,17 +206,17 @@ class HAPMChoresDueSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        due_chores = self._get_due_chores()
+        due_chores    = self._get_due_chores()
         paused_chores = self._get_paused_chores()
-        all_chores = self._get_all_chores()
-        due_ids = {c.id for c in due_chores}
+        all_chores    = self._get_all_chores()
+        due_ids    = {c.id for c in due_chores}
         paused_ids = {c.id for c in paused_chores}
-        complete_or_not_due = [c for c in all_chores if c.id not in due_ids and c.id not in paused_ids]
+        complete_chores = [c for c in all_chores if c.id not in due_ids and c.id not in paused_ids]
         return {
             "entry_id": self._child_entry_id,
             "child_name": self._child_name,
             "avatar_colour": self._colour,
-            "due_chores": [self._serialize_chore(c) for c in due_chores],
-            "paused_chores": [self._serialize_chore(c) for c in paused_chores],
-            "all_chores": [self._serialize_chore(c) for c in complete_or_not_due],
+            "due_chores":      [self._serialize_chore(c) for c in due_chores],
+            "paused_chores":   [self._serialize_chore(c) for c in paused_chores],
+            "complete_chores": [self._serialize_chore(c) for c in complete_chores],
         }

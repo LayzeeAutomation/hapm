@@ -1,20 +1,16 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.22
+ * HAPM Pocket Money Panel Card  v0.1.23
  *
- * Changes vs 0.1.21:
- *   - sensor.py now exposes a 'ledger' attribute on the balance sensor
- *     containing the 50 most-recent events (newest first).
- *   - Ledger tab is now a real transaction list showing:
- *       • Event type icon + label (chore earned / payment made / occurrence logged)
- *       • Chore name / note
- *       • Amount (green = earned, red = payment)
- *       • Human-readable timestamp
- *       • Running balance column
- *   - category + assignment_mode + pay_split_mode now forwarded from sensor
- *     for both due_chores and paused_chores (so icons always correct).
+ * Changes vs 0.1.22:
+ *   - category is now a first-class field on the Chore model (no more getattr hack)
+ *   - sensor now exposes complete_chores attribute (non-due, non-paused chores)
+ *   - New "All" nav tab shows every chore for the active child with edit + pause actions
+ *     so you can manage chores at any time, not just when they're due
+ *   - Weekly chores now calendar-align to Monday; monthly to the 1st
+ *   - Missed recurring chores silently roll forward instead of stacking
  */
 
-const HAPM_VERSION = '0.1.22';
+const HAPM_VERSION = '0.1.23';
 const CURRENCY_DEFAULT = '\u00a3';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -51,39 +47,41 @@ function choreIcon(c) {
   return LEGACY_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % LEGACY_ICONS.length];
 }
 
-// Ledger event-type metadata
 const LEDGER_META = {
-  chore_completed:    { icon: '\u2705', label: 'Chore completed',    colour: '#6daa45' },
-  occurrence_logged:  { icon: '\ud83d\udfe3', label: 'Occurrence logged', colour: '#7c63d1' },
-  payment_made:       { icon: '\ud83d\udcb8', label: 'Paid out',          colour: '#db4437' },
+  chore_completed:   { icon: '\u2705', label: 'Chore completed',   colour: '#6daa45' },
+  occurrence_logged: { icon: '\ud83d\udfe3', label: 'Occurrence logged', colour: '#7c63d1' },
+  payment_made:      { icon: '\ud83d\udcb8', label: 'Paid out',         colour: '#db4437' },
 };
-function ledgerMeta(event_type) {
-  return LEDGER_META[event_type] || { icon: '\u2b50', label: event_type, colour: '#9e9e9e' };
-}
+function ledgerMeta(t) { return LEDGER_META[t] || { icon: '\u2b50', label: t, colour: '#9e9e9e' }; }
 
 function fmtMoney(v, sym = CURRENCY_DEFAULT) { return sym + Math.abs(v).toFixed(2); }
 function fmtMoneyRaw(v, sym = CURRENCY_DEFAULT) {
-  const sign = v >= 0 ? '+' : '-';
-  return sign + sym + Math.abs(v).toFixed(2);
+  return (v >= 0 ? '+' : '-') + sym + Math.abs(v).toFixed(2);
 }
 function fmtDate(iso) {
   const d = new Date(iso), now = new Date(), diff = now - d;
-  if (diff < 60000) return 'Just now';
-  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
-  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
-  if (diff < 604800000) {
-    return d.toLocaleDateString('en-GB', { weekday: 'short' }) + ' ' +
-           d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  }
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  if (diff < 60000)    return 'Just now';
+  if (diff < 3600000)  return Math.floor(diff/60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+  if (diff < 604800000)
+    return d.toLocaleDateString('en-GB',{weekday:'short'}) + ' ' +
+           d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+}
+function fmtNextDue(iso) {
+  if (!iso) return '';
+  const d = new Date(iso), now = new Date();
+  if (d <= now) return 'Due now';
+  const diff = d - now;
+  if (diff < 86400000) return 'Today';
+  if (diff < 172800000) return 'Tomorrow';
+  return 'Due ' + d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
 }
 function esc(s) {
-  return String(s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function daysRemaining(isoUntil) {
-  return Math.max(0, Math.ceil((new Date(isoUntil) - new Date()) / 86400000));
+  return Math.max(0, Math.ceil((new Date(isoUntil)-new Date())/86400000));
 }
 function isIndefinitePause(isoUntil) {
   return isoUntil && new Date(isoUntil).getFullYear() >= 9999;
@@ -91,15 +89,14 @@ function isIndefinitePause(isoUntil) {
 function fmtPausedUntil(isoUntil) {
   if (!isoUntil) return '';
   if (isIndefinitePause(isoUntil)) return 'Indefinite';
-  const d = new Date(isoUntil);
-  return 'Until ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return 'Until ' + new Date(isoUntil).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
 }
 function getDesc(c) { return (c.description && c.description.trim()) ? c.description.trim() : ''; }
 
 function categoryOptionsHTML(selected = DEFAULT_CATEGORY) {
   return CATEGORY_KEYS.map(k => {
-    const { emoji, label } = CHORE_CATEGORIES[k];
-    return `<option value="${k}"${k === selected ? ' selected' : ''}>${emoji} ${label}</option>`;
+    const {emoji,label} = CHORE_CATEGORIES[k];
+    return `<option value="${k}"${k===selected?' selected':''}>${emoji} ${label}</option>`;
   }).join('');
 }
 
@@ -157,6 +154,7 @@ const STYLES = `
   .chore-card.completing { opacity:0.35; pointer-events:none; }
   .chore-card.optimistic { opacity:0.6; }
   .chore-card.paused-card { border-left:3px solid #c9920a; opacity:0.85; }
+  .chore-card.complete-card { border-left:3px solid #6daa45; opacity:0.85; }
   .chore-top { display:flex; align-items:flex-start; gap:10px; }
   .chore-icon { width:34px; height:34px; border-radius:8px; display:flex;
     align-items:center; justify-content:center; font-size:18px;
@@ -170,6 +168,7 @@ const STYLES = `
   .pill-multi  { background:rgba(124,99,209,0.15); color:#7c63d1; }
   .pill-recur  { background:rgba(85,145,199,0.15); color:#5591c7; }
   .pill-paused { background:rgba(201,146,10,0.15); color:#c9920a; }
+  .pill-done   { background:rgba(109,170,69,0.15); color:#6daa45; }
   .pill-team   { background:rgba(232,97,154,0.15); color:#e8619a; }
   .occ-track { display:flex; gap:4px; margin-top:6px; align-items:center; }
   .occ-dot { width:10px; height:10px; border-radius:9999px; flex-shrink:0;
@@ -199,8 +198,7 @@ const STYLES = `
   .ledger-balance { font-size:13px; color:var(--secondary-text-color); }
   .ledger-balance strong { font-size:16px; color:var(--success-color,#6daa45);
     font-variant-numeric:tabular-nums; }
-  .ledger-row { display:grid;
-    grid-template-columns:32px 1fr auto auto;
+  .ledger-row { display:grid; grid-template-columns:32px 1fr auto auto;
     gap:0 10px; align-items:center;
     padding:10px 0; border-bottom:1px solid var(--divider-color); }
   .ledger-row:last-child { border-bottom:none; }
@@ -349,8 +347,9 @@ class HapmPanelCard extends HTMLElement {
       const rawBalance   = parseFloat(state.state) || 0;
       const dueSensorId  = entityId.replace('_pocket_money_balance','_chores_due');
       const dueSensor    = states[dueSensorId];
-      const serverChores = dueSensor?.attributes?.due_chores || [];
-      const pausedChores = dueSensor?.attributes?.paused_chores || [];
+      const serverChores    = dueSensor?.attributes?.due_chores    || [];
+      const pausedChores    = dueSensor?.attributes?.paused_chores || [];
+      const completeChores  = dueSensor?.attributes?.complete_chores || [];
       const lastPaid     = attrs.last_paid || null;
       const ledger       = attrs.ledger || [];
       const optimistic   = this._optimisticChores[childEntryId] || [];
@@ -363,7 +362,7 @@ class HapmPanelCard extends HTMLElement {
 
       children.push({ childEntryId, childName, colour, currency, balance,
                        dueChores: [...serverChores, ...optimistic],
-                       pausedChores, lastPaid, ledger });
+                       pausedChores, completeChores, lastPaid, ledger });
     }
 
     if (children.length) {
@@ -435,6 +434,7 @@ class HapmPanelCard extends HTMLElement {
       <div class="nav">
         <button class="nav-btn active" id="nav-chores">Chores<span class="badge" id="nav-badge" style="display:none"></span></button>
         <button class="nav-btn" id="nav-paused">Paused<span class="badge badge-warn" id="nav-paused-badge" style="display:none"></span></button>
+        <button class="nav-btn" id="nav-all">All Chores</button>
         <button class="nav-btn" id="nav-ledger">Ledger</button>
       </div>
       <div class="panel" id="panel"></div>`;
@@ -447,7 +447,6 @@ class HapmPanelCard extends HTMLElement {
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
           <div class="hapm-title">\u2795 Add Chore</div>
-
           <div class="hapm-2col">
             <div>
               <label class="hapm-label">Category</label>
@@ -463,27 +462,22 @@ class HapmPanelCard extends HTMLElement {
               </select>
             </div>
           </div>
-
           <label class="hapm-label">Chore Name</label>
           <input class="hapm-input" id="m-name" type="text" placeholder="e.g. Tidy bedroom"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
-
           <label class="hapm-label">Description (optional)</label>
           <input class="hapm-input" id="m-desc" type="text" placeholder="Extra detail\u2026"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
-
           <div class="hapm-2col">
             <div>
               <label class="hapm-label">Value (\u00a3)</label>
-              <input class="hapm-input" id="m-value" type="number"
-                inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
+              <input class="hapm-input" id="m-value" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
             </div>
             <div>
               <label class="hapm-label">Occurrences</label>
               <input class="hapm-input" id="m-occ" type="number" inputmode="numeric" min="1" value="1">
             </div>
           </div>
-
           <div class="hapm-multi-row" id="m-paymode-row">
             <label class="hapm-label">Pay Mode</label>
             <select class="hapm-select" id="m-paymode">
@@ -491,50 +485,38 @@ class HapmPanelCard extends HTMLElement {
               <option value="on_completion">All at once \u2014 full value when all done</option>
             </select>
           </div>
-
           <label class="hapm-label">Assign To</label>
           <div class="hapm-children-list" id="m-children"></div>
-
           <div class="hapm-assign-row" id="m-assign-row">
             <label class="hapm-label">How should they work?</label>
             <div class="hapm-option-group" id="m-assign-group">
               <label class="hapm-option selected">
                 <input type="radio" name="m-assign" value="individual" checked>
-                <div>
-                  <div class="hapm-option-title">\ud83d\udc64 Individual</div>
-                  <div class="hapm-option-desc">Each child gets their own set of occurrences to complete independently.</div>
-                </div>
+                <div><div class="hapm-option-title">\ud83d\udc64 Individual</div>
+                <div class="hapm-option-desc">Each child gets their own set of occurrences to complete independently.</div></div>
               </label>
               <label class="hapm-option">
                 <input type="radio" name="m-assign" value="team">
-                <div>
-                  <div class="hapm-option-title">\ud83d\udc6a Team</div>
-                  <div class="hapm-option-desc">All children work towards the same shared occurrence target together.</div>
-                </div>
+                <div><div class="hapm-option-title">\ud83d\udc6a Team</div>
+                <div class="hapm-option-desc">All children work towards the same shared occurrence target together.</div></div>
               </label>
             </div>
           </div>
-
           <div class="hapm-split-row" id="m-split-row">
             <label class="hapm-label">How should they be paid?</label>
             <div class="hapm-option-group" id="m-split-group">
               <label class="hapm-option selected">
                 <input type="radio" name="m-split" value="full" checked>
-                <div>
-                  <div class="hapm-option-title">\ud83d\udcb0 Each earns full value</div>
-                  <div class="hapm-option-desc">Every child in the team earns the full chore value.</div>
-                </div>
+                <div><div class="hapm-option-title">\ud83d\udcb0 Each earns full value</div>
+                <div class="hapm-option-desc">Every child in the team earns the full chore value.</div></div>
               </label>
               <label class="hapm-option">
                 <input type="radio" name="m-split" value="shared">
-                <div>
-                  <div class="hapm-option-title">\u2797 Split equally</div>
-                  <div class="hapm-option-desc">The total value is divided equally between all children in the team.</div>
-                </div>
+                <div><div class="hapm-option-title">\u2797 Split equally</div>
+                <div class="hapm-option-desc">The total value is divided equally between all children in the team.</div></div>
               </label>
             </div>
           </div>
-
           <div class="hapm-actions">
             <button class="hapm-btn hapm-btn-cancel" id="m-add-cancel">Cancel</button>
             <button class="hapm-btn hapm-btn-ok"     id="m-add-submit">Add Chore</button>
@@ -547,7 +529,6 @@ class HapmPanelCard extends HTMLElement {
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
           <div class="hapm-title">\u270f\ufe0f Edit Chore</div>
-
           <div class="hapm-2col">
             <div>
               <label class="hapm-label">Category</label>
@@ -563,18 +544,14 @@ class HapmPanelCard extends HTMLElement {
               </select>
             </div>
           </div>
-
           <label class="hapm-label">Chore Name</label>
-          <input class="hapm-input" id="e-name" type="text"
-            autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <input class="hapm-input" id="e-name" type="text" autocomplete="off" autocorrect="off" autocapitalize="sentences">
           <label class="hapm-label">Description (optional)</label>
-          <input class="hapm-input" id="e-desc" type="text"
-            autocomplete="off" autocorrect="off" autocapitalize="sentences">
+          <input class="hapm-input" id="e-desc" type="text" autocomplete="off" autocorrect="off" autocapitalize="sentences">
           <div class="hapm-2col">
             <div>
               <label class="hapm-label">Value (\u00a3)</label>
-              <input class="hapm-input" id="e-value" type="number"
-                inputmode="decimal" min="0.01" step="0.01">
+              <input class="hapm-input" id="e-value" type="number" inputmode="decimal" min="0.01" step="0.01">
             </div>
             <div>
               <label class="hapm-label">Occurrences</label>
@@ -601,8 +578,7 @@ class HapmPanelCard extends HTMLElement {
           <div class="hapm-handle"></div>
           <div class="hapm-title">\ud83c\udfd6 Holiday Mode</div>
           <label class="hapm-label">How many days are you away?</label>
-          <input class="hapm-input" id="m-holiday-days" type="number"
-            inputmode="numeric" min="1" max="365" value="7">
+          <input class="hapm-input" id="m-holiday-days" type="number" inputmode="numeric" min="1" max="365" value="7">
           <div class="hapm-actions">
             <button class="hapm-btn hapm-btn-cancel" id="m-holiday-cancel">Cancel</button>
             <button class="hapm-btn hapm-btn-ok"     id="m-holiday-submit">Start Holiday</button>
@@ -630,8 +606,7 @@ class HapmPanelCard extends HTMLElement {
           <div class="hapm-title">\u23f8 Pause Chore</div>
           <div class="hapm-confirm-msg" id="m-pause-chore-name" style="text-align:left;margin-bottom:16px;font-weight:600"></div>
           <label class="hapm-label">Pause for how many days?</label>
-          <input class="hapm-input" id="m-pause-days" type="number"
-            inputmode="numeric" min="1" placeholder="Leave blank to pause indefinitely">
+          <input class="hapm-input" id="m-pause-days" type="number" inputmode="numeric" min="1" placeholder="Leave blank to pause indefinitely">
           <div class="hapm-hint">Leave blank to pause until manually resumed.</div>
           <div class="hapm-actions">
             <button class="hapm-btn hapm-btn-cancel" id="m-pause-cancel">Cancel</button>
@@ -661,39 +636,30 @@ class HapmPanelCard extends HTMLElement {
     const tabsEl = sr.getElementById('child-tabs');
     if (tabsEl) {
       tabsEl.innerHTML = this._children.map(c => `
-        <button class="child-tab${c.childEntryId === this._activeChildId ? ' active' : ''}"
-          data-action="set-child" data-child="${esc(c.childEntryId)}">
+        <button class="child-tab${c.childEntryId===this._activeChildId?' active':''}" data-action="set-child" data-child="${esc(c.childEntryId)}">
           <span class="dot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
           ${esc(c.childName)}
           <span style="opacity:0.75;font-size:11px">${fmtMoney(Math.max(0,c.balance),c.currency)}</span>
         </button>`).join('');
-      tabsEl.querySelectorAll('[data-action]').forEach(el =>
-        el.addEventListener('click', e => this._handleAction(e)));
+      tabsEl.querySelectorAll('[data-action]').forEach(el => el.addEventListener('click', e => this._handleAction(e)));
     }
 
     if (child) {
       const balEl = sr.getElementById('kpi-balance');
-      if (balEl) {
-        balEl.textContent = fmtMoney(child.balance, child.currency);
-        balEl.className = 'kpi-value' + (child.balance > 0 ? ' positive' : '');
-      }
-      const n = (child.dueChores || []).length;
-      const p = (child.pausedChores || []).length;
-      const dueEl = sr.getElementById('kpi-due');
-      if (dueEl) dueEl.textContent = n;
-      const dueSubEl = sr.getElementById('kpi-due-sub');
-      if (dueSubEl) dueSubEl.textContent = 'chore' + (n !== 1 ? 's' : '');
-      const lpEl = sr.getElementById('kpi-lastpaid');
-      if (lpEl) lpEl.textContent = child.lastPaid ? fmtDate(child.lastPaid) : '\u2014';
-      const badge = sr.getElementById('nav-badge');
-      if (badge) { badge.textContent = n; badge.style.display = n ? '' : 'none'; }
-      const pbadge = sr.getElementById('nav-paused-badge');
-      if (pbadge) { pbadge.textContent = p; pbadge.style.display = p ? '' : 'none'; }
+      if (balEl) { balEl.textContent = fmtMoney(child.balance, child.currency); balEl.className = 'kpi-value' + (child.balance > 0 ? ' positive' : ''); }
+      const n = (child.dueChores||[]).length;
+      const p = (child.pausedChores||[]).length;
+      const dueEl = sr.getElementById('kpi-due'); if (dueEl) dueEl.textContent = n;
+      const dueSubEl = sr.getElementById('kpi-due-sub'); if (dueSubEl) dueSubEl.textContent = 'chore'+(n!==1?'s':'');
+      const lpEl = sr.getElementById('kpi-lastpaid'); if (lpEl) lpEl.textContent = child.lastPaid ? fmtDate(child.lastPaid) : '\u2014';
+      const badge = sr.getElementById('nav-badge'); if (badge) { badge.textContent=n; badge.style.display=n?'':'none'; }
+      const pbadge = sr.getElementById('nav-paused-badge'); if (pbadge) { pbadge.textContent=p; pbadge.style.display=p?'':'none'; }
     }
 
-    sr.getElementById('nav-chores')?.classList.toggle('active', this._view === 'chores');
-    sr.getElementById('nav-paused')?.classList.toggle('active', this._view === 'paused');
-    sr.getElementById('nav-ledger')?.classList.toggle('active', this._view === 'ledger');
+    sr.getElementById('nav-chores')?.classList.toggle('active', this._view==='chores');
+    sr.getElementById('nav-paused')?.classList.toggle('active', this._view==='paused');
+    sr.getElementById('nav-all')?.classList.toggle('active',    this._view==='all');
+    sr.getElementById('nav-ledger')?.classList.toggle('active', this._view==='ledger');
 
     if (this._anyModalOpen()) return;
 
@@ -702,57 +668,17 @@ class HapmPanelCard extends HTMLElement {
 
     if (this._view === 'chores') {
       panel.innerHTML = this._choresPanelHTML(child);
-      panel.querySelectorAll('[data-action]').forEach(el =>
-        el.addEventListener('click', e => this._handleAction(e)));
     } else if (this._view === 'paused') {
       panel.innerHTML = this._pausedPanelHTML(child);
-      panel.querySelectorAll('[data-action]').forEach(el =>
-        el.addEventListener('click', e => this._handleAction(e)));
+    } else if (this._view === 'all') {
+      panel.innerHTML = this._allChoresPanelHTML(child);
     } else {
       panel.innerHTML = this._ledgerPanelHTML(child);
     }
+    panel.querySelectorAll('[data-action]').forEach(el => el.addEventListener('click', e => this._handleAction(e)));
   }
 
-  _ledgerPanelHTML(child) {
-    if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.</div>`;
-    const entries = child.ledger || [];
-    if (!entries.length) {
-      return `<div class="empty"><div class="empty-icon">\ud83d\udcd2</div>No transactions yet.<br>Complete a chore to get started!</div>`;
-    }
-
-    // Compute running balance from newest to oldest.
-    // entries are newest-first, running balance shown is the balance AFTER that event.
-    // We compute by summing amounts from oldest to newest then reverse.
-    const reversed = [...entries].reverse(); // oldest first
-    let running = 0;
-    const runningBalances = reversed.map(e => { running += e.amount; return running; });
-    runningBalances.reverse(); // now newest-first, matching entries order
-
-    const rows = entries.map((e, i) => {
-      const meta    = ledgerMeta(e.event_type);
-      const isEarn  = e.amount > 0;
-      const amtStr  = fmtMoneyRaw(e.amount, child.currency);
-      const runStr  = fmtMoney(runningBalances[i], child.currency);
-      const noteStr = e.note ? esc(e.note) : esc(meta.label);
-      return `<div class="ledger-row">
-        <div class="ledger-icon">${meta.icon}</div>
-        <div>
-          <div class="ledger-label">${noteStr}</div>
-          <div class="ledger-time">${fmtDate(e.timestamp)}</div>
-        </div>
-        <div class="ledger-amount ${isEarn ? 'earn' : 'pay'}">${amtStr}</div>
-        <div class="ledger-running">${runStr}</div>
-      </div>`;
-    }).join('');
-
-    return `
-      <div class="ledger-header">
-        <strong style="font-size:13px">Transaction History</strong>
-        <div class="ledger-balance">Balance: <strong>${fmtMoney(child.balance, child.currency)}</strong></div>
-      </div>
-      ${rows}
-      ${entries.length >= 50 ? `<div style="text-align:center;padding:12px 0;font-size:12px;color:var(--secondary-text-color)">Showing most recent 50 transactions</div>` : ''}`;
-  }
+  // ── Panel renderers ──────────────────────────────────────────────────────────
 
   _choresPanelHTML(child) {
     if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.<br>Add a child in Settings \u2192 Integrations \u2192 HAPM.</div>`;
@@ -774,12 +700,98 @@ class HapmPanelCard extends HTMLElement {
   _pausedPanelHTML(child) {
     if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.</div>`;
     const chores = child.pausedChores || [];
-    if (!chores.length) {
-      return `<div class="empty"><div class="empty-icon">\u25b6\ufe0f</div>No paused chores \u2014 everything is active.</div>`;
-    }
+    if (!chores.length) return `<div class="empty"><div class="empty-icon">\u25b6\ufe0f</div>No paused chores \u2014 everything is active.</div>`;
     return `
       <div style="margin-bottom:10px"><strong style="font-size:13px">Paused Chores</strong></div>
       ${chores.map(c => this._pausedCardHTML(c, child)).join('')}`;
+  }
+
+  _allChoresPanelHTML(child) {
+    if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.</div>`;
+    const due     = child.dueChores     || [];
+    const paused  = child.pausedChores  || [];
+    const complete = child.completeChores || [];
+    const total   = due.length + paused.length + complete.length;
+    if (!total) return `<div class="empty"><div class="empty-icon">\ud83d\udccb</div>No chores yet.<br>Tap + Add Chore to get started.</div>`;
+
+    const sections = [];
+
+    if (due.length) {
+      sections.push(`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--secondary-text-color);margin-bottom:8px;margin-top:4px">Due Now (${due.length})</div>`);
+      sections.push(...due.map(c => this._allChoreCardHTML(c, child, 'due')));
+    }
+    if (paused.length) {
+      sections.push(`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--secondary-text-color);margin-bottom:8px;margin-top:12px">Paused (${paused.length})</div>`);
+      sections.push(...paused.map(c => this._allChoreCardHTML(c, child, 'paused')));
+    }
+    if (complete.length) {
+      sections.push(`<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--secondary-text-color);margin-bottom:8px;margin-top:12px">Done / Not Yet Due (${complete.length})</div>`);
+      sections.push(...complete.map(c => this._allChoreCardHTML(c, child, 'complete')));
+    }
+
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <strong style="font-size:13px">All Chores (${total})</strong>
+        <button class="btn btn-ghost" data-action="open-add-form">+ Add Chore</button>
+      </div>
+      ${sections.join('')}`;
+  }
+
+  _allChoreCardHTML(c, child, status) {
+    const desc     = getDesc(c);
+    const isMulti  = (c.occurrences_required||1) > 1;
+    const isTeam   = c.assignment_mode === 'team';
+    const isShared = c.pay_split_mode  === 'shared';
+    const done     = c.occurrences_completed || 0;
+    const total    = c.occurrences_required  || 1;
+    const choreJson = esc(JSON.stringify(c));
+
+    let borderColour = '';
+    let statusPill = '';
+    if (status === 'due') {
+      borderColour = 'border-left:3px solid var(--primary-color);';
+      statusPill = '<span class="pill pill-due">\u23f0 Due</span>';
+    } else if (status === 'paused') {
+      borderColour = 'border-left:3px solid #c9920a;';
+      statusPill = `<span class="pill pill-paused">\u23f8 ${esc(fmtPausedUntil(c.paused_until))}</span>`;
+    } else {
+      borderColour = 'border-left:3px solid #6daa45;';
+      const nextLabel = c.next_due ? fmtNextDue(c.next_due) : (c.recurrence === 'manual' ? 'Manual' : '');
+      statusPill = nextLabel ? `<span class="pill pill-done">\u2705 ${esc(nextLabel)}</span>` : '<span class="pill pill-done">\u2705 Done</span>';
+    }
+
+    const lastDoneStr = c.last_completed
+      ? `<div style="font-size:11px;color:var(--secondary-text-color);margin-top:2px">Last done ${fmtDate(c.last_completed)}</div>`
+      : '';
+
+    const resumeBtn = status === 'paused'
+      ? `<button class="btn btn-warn" data-action="resume" data-chore="${esc(c.id)}">\u25b6 Resume</button>`
+      : '';
+
+    return `<div class="chore-card" style="${borderColour}">
+      <div>
+        <div class="chore-top">
+          <div class="chore-icon">${choreIcon(c)}</div>
+          <div style="flex:1">
+            <div class="chore-name">${esc(c.name)}</div>
+            ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
+            ${lastDoneStr}
+            <div class="chore-meta">
+              ${statusPill}
+              ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
+              ${isMulti ? `<span class="pill pill-multi">${done}/${total}\u00d7</span>` : ''}
+              ${isTeam  ? `<span class="pill pill-team">\ud83d\udc6a Team${isShared?' \u00f7':''}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="chore-actions">
+          ${resumeBtn}
+          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">\u270f\ufe0f Edit</button>
+          <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">\u23f8 Pause</button>
+        </div>
+      </div>
+      <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
+    </div>`;
   }
 
   _pausedCardHTML(c, child) {
@@ -801,15 +813,14 @@ class HapmPanelCard extends HTMLElement {
             <div class="chore-meta">
               <span class="pill pill-paused">\u23f8 ${esc(label)}</span>
               ${isMulti ? `<span class="pill pill-multi">${done}/${total}\u00d7</span>` : ''}
-              ${isTeam  ? `<span class="pill pill-team">\ud83d\udc6a Team${isShared ? ' \u00f7' : ''}</span>` : ''}
+              ${isTeam  ? `<span class="pill pill-team">\ud83d\udc6a Team${isShared?' \u00f7':''}</span>` : ''}
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
             </div>
-            ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i) =>
-              `<span class="occ-dot${i < done ? ' done' : ''}"></span>`).join('')}</div>` : ''}
+            ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i)=>`<span class="occ-dot${i<done?' done':''}"></span>`).join('')}</div>` : ''}
           </div>
         </div>
         <div class="chore-actions">
-          <button class="btn btn-warn"  data-action="resume" data-chore="${esc(c.id)}">\u25b6 Resume</button>
+          <button class="btn btn-warn"  data-action="resume"    data-chore="${esc(c.id)}">\u25b6 Resume</button>
           <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">\u270f\ufe0f Edit</button>
         </div>
       </div>
@@ -827,47 +838,71 @@ class HapmPanelCard extends HTMLElement {
     const total    = c.occurrences_required  || 1;
     const nextOcc  = done + 1;
     const choreJson = esc(JSON.stringify(c));
-    return `<div class="chore-card${isOpt ? ' optimistic' : ''}">
+    return `<div class="chore-card${isOpt?' optimistic':''}">
       <div>
         <div class="chore-top">
           <div class="chore-icon">${choreIcon(c)}</div>
           <div>
-            <div class="chore-name">${esc(c.name)}${isOpt ? ' <span style="font-size:10px;opacity:0.5">(saving\u2026)</span>' : ''}</div>
+            <div class="chore-name">${esc(c.name)}${isOpt?' <span style="font-size:10px;opacity:0.5">(saving\u2026)</span>':''}</div>
             ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
             <div class="chore-meta">
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
               ${isMulti ? `<span class="pill pill-multi">${done}/${total}\u00d7</span>` : ''}
-              ${isTeam  ? `<span class="pill pill-team">\ud83d\udc6a Team${isShared ? ' \u00f7' : ''}</span>` : ''}
+              ${isTeam  ? `<span class="pill pill-team">\ud83d\udc6a Team${isShared?' \u00f7':''}</span>` : ''}
               ${!isOpt  ? '<span class="pill pill-due">Due</span>' : ''}
             </div>
-            ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i) =>
-              `<span class="occ-dot${i < done ? ' done' : ''}"></span>`).join('')}</div>` : ''}
+            ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i)=>`<span class="occ-dot${i<done?' done':''}"></span>`).join('')}</div>` : ''}
           </div>
         </div>
         ${!isOpt ? `<div class="chore-actions">
           ${isMulti
-            ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log ${nextOcc}/${total} \u2713</button>`
+            ? `<button class="btn btn-primary" data-action="log-occ"  data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log ${nextOcc}/${total} \u2713</button>`
             : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done \u2713</button>`}
           <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">Pause</button>
-          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">\u270f\ufe0f</button>
+          <button class="btn btn-ghost" data-action="open-edit"  data-chore-json="${choreJson}">\u270f\ufe0f</button>
         </div>` : ''}
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
     </div>`;
   }
 
+  _ledgerPanelHTML(child) {
+    if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.</div>`;
+    const entries = child.ledger || [];
+    if (!entries.length) return `<div class="empty"><div class="empty-icon">\ud83d\udcd2</div>No transactions yet.<br>Complete a chore to get started!</div>`;
+    const reversed = [...entries].reverse();
+    let running = 0;
+    const runningBalances = reversed.map(e => { running += e.amount; return running; });
+    runningBalances.reverse();
+    const rows = entries.map((e,i) => {
+      const meta   = ledgerMeta(e.event_type);
+      const isEarn = e.amount > 0;
+      return `<div class="ledger-row">
+        <div class="ledger-icon">${meta.icon}</div>
+        <div>
+          <div class="ledger-label">${e.note ? esc(e.note) : esc(meta.label)}</div>
+          <div class="ledger-time">${fmtDate(e.timestamp)}</div>
+        </div>
+        <div class="ledger-amount ${isEarn?'earn':'pay'}">${fmtMoneyRaw(e.amount, child.currency)}</div>
+        <div class="ledger-running">${fmtMoney(runningBalances[i], child.currency)}</div>
+      </div>`;
+    }).join('');
+    return `
+      <div class="ledger-header">
+        <strong style="font-size:13px">Transaction History</strong>
+        <div class="ledger-balance">Balance: <strong>${fmtMoney(child.balance,child.currency)}</strong></div>
+      </div>
+      ${rows}
+      ${entries.length>=50?`<div style="text-align:center;padding:12px 0;font-size:12px;color:var(--secondary-text-color)">Showing most recent 50 transactions</div>`:''}`;
+  }
+
   _bindEvents() {
     const sr = this.shadowRoot;
 
-    sr.getElementById('nav-chores')?.addEventListener('click', () => {
-      this._view = 'chores'; this._updateDOM();
-    });
-    sr.getElementById('nav-paused')?.addEventListener('click', () => {
-      this._view = 'paused'; this._updateDOM();
-    });
-    sr.getElementById('nav-ledger')?.addEventListener('click', () => {
-      this._view = 'ledger'; this._updateDOM();
-    });
+    sr.getElementById('nav-chores')?.addEventListener('click', () => { this._view='chores'; this._updateDOM(); });
+    sr.getElementById('nav-paused')?.addEventListener('click', () => { this._view='paused'; this._updateDOM(); });
+    sr.getElementById('nav-all')?.addEventListener('click',    () => { this._view='all';    this._updateDOM(); });
+    sr.getElementById('nav-ledger')?.addEventListener('click', () => { this._view='ledger'; this._updateDOM(); });
 
     sr.getElementById('btn-holiday')?.addEventListener('click', () => {
       const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
@@ -883,126 +918,97 @@ class HapmPanelCard extends HTMLElement {
     });
 
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
-
     sr.getElementById('m-occ')?.addEventListener('input', () => {
-      const occ = parseInt(sr.getElementById('m-occ').value) || 1;
-      sr.getElementById('m-paymode-row')?.classList.toggle('visible', occ > 1);
+      const occ = parseInt(sr.getElementById('m-occ').value)||1;
+      sr.getElementById('m-paymode-row')?.classList.toggle('visible', occ>1);
     });
-
     sr.getElementById('m-children')?.addEventListener('change', () => {
       this._refreshAddMultiSections();
       syncOptionGroup(sr.getElementById('m-assign-group'));
       syncOptionGroup(sr.getElementById('m-split-group'));
     });
-
     sr.getElementById('m-assign-group')?.addEventListener('change', () => {
       this._refreshAddMultiSections();
       syncOptionGroup(sr.getElementById('m-assign-group'));
     });
-
     sr.getElementById('m-split-group')?.addEventListener('change', () => {
       syncOptionGroup(sr.getElementById('m-split-group'));
     });
-
     sr.getElementById('m-add-submit')?.addEventListener('click', () => {
       const name     = sr.getElementById('m-name').value.trim();
       const desc     = sr.getElementById('m-desc').value.trim();
       const value    = parseFloat(sr.getElementById('m-value').value);
-      const recur    = sr.getElementById('m-recur').value || 'manual';
-      const occ      = parseInt(sr.getElementById('m-occ').value) || 1;
-      const category = sr.getElementById('m-category').value || DEFAULT_CATEGORY;
-      const payMode  = occ > 1 ? (sr.getElementById('m-paymode').value || 'per_occurrence') : 'per_occurrence';
-      const assigned = [...sr.querySelectorAll('#m-children input[type=checkbox]:checked')]
-        .map(cb => cb.value);
-      if (!name || !value || !assigned.length) {
-        if (!name) sr.getElementById('m-name').focus();
-        return;
-      }
-
-      const isMultiChild = assigned.length > 1;
+      const recur    = sr.getElementById('m-recur').value||'manual';
+      const occ      = parseInt(sr.getElementById('m-occ').value)||1;
+      const category = sr.getElementById('m-category').value||DEFAULT_CATEGORY;
+      const payMode  = occ>1?(sr.getElementById('m-paymode').value||'per_occurrence'):'per_occurrence';
+      const assigned = [...sr.querySelectorAll('#m-children input[type=checkbox]:checked')].map(cb=>cb.value);
+      if (!name||!value||!assigned.length) { if(!name) sr.getElementById('m-name').focus(); return; }
+      const isMultiChild = assigned.length>1;
       const assignMode   = isMultiChild ? this._getAddAssignMode() : 'individual';
-      const splitMode    = (isMultiChild && assignMode === 'team') ? this._getAddSplitMode() : 'full';
-
+      const splitMode    = (isMultiChild&&assignMode==='team') ? this._getAddSplitMode() : 'full';
       this._closeModal('modal-add');
-
-      const expiresAt = Date.now() + OPTIMISTIC_TTL_MS;
+      const expiresAt = Date.now()+OPTIMISTIC_TTL_MS;
       assigned.forEach(childId => {
-        if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
-        this._optimisticChores[childId].push({
-          id: '_opt_' + Date.now(), name, description: desc || null, value,
-          recurrence: recur, occurrences_required: occ, occurrences_completed: 0,
-          category, assignment_mode: assignMode, pay_split_mode: splitMode,
-          _optimistic: true, _expiresAt: expiresAt,
-        });
+        if (!this._optimisticChores[childId]) this._optimisticChores[childId]=[];
+        this._optimisticChores[childId].push({ id:'_opt_'+Date.now(), name, description:desc||null, value,
+          recurrence:recur, occurrences_required:occ, occurrences_completed:0,
+          category, assignment_mode:assignMode, pay_split_mode:splitMode,
+          _optimistic:true, _expiresAt:expiresAt });
       });
-      this._syncFromHass();
-      this._updateDOM();
-
-      this._callService('add_chore', {
-        name, value, recurrence: recur, occurrences_required: occ,
-        pay_mode: payMode, assignment_mode: assignMode, pay_split_mode: splitMode,
-        category, assigned_to: assigned,
-        ...(desc ? { description: desc } : {}),
-      });
+      this._syncFromHass(); this._updateDOM();
+      this._callService('add_chore', { name, value, recurrence:recur, occurrences_required:occ,
+        pay_mode:payMode, assignment_mode:assignMode, pay_split_mode:splitMode,
+        category, assigned_to:assigned, ...(desc?{description:desc}:{}) });
     });
 
     sr.getElementById('m-edit-cancel')?.addEventListener('click', () => this._closeModal('modal-edit'));
     sr.getElementById('e-occ')?.addEventListener('input', () => {
-      const occ = parseInt(sr.getElementById('e-occ').value) || 1;
-      sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ > 1);
+      const occ = parseInt(sr.getElementById('e-occ').value)||1;
+      sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ>1);
     });
     sr.getElementById('m-edit-submit')?.addEventListener('click', () => {
-      const modal    = sr.getElementById('modal-edit');
-      const choreId  = modal.dataset.choreId;
-      const name     = sr.getElementById('e-name').value.trim();
-      const desc     = sr.getElementById('e-desc').value.trim();
-      const value    = parseFloat(sr.getElementById('e-value').value);
-      const recur    = sr.getElementById('e-recur').value || 'manual';
-      const occ      = parseInt(sr.getElementById('e-occ').value) || 1;
-      const category = sr.getElementById('e-category').value || DEFAULT_CATEGORY;
-      const payMode  = occ > 1 ? (sr.getElementById('e-paymode').value || 'per_occurrence') : 'per_occurrence';
-      if (!name || !value) {
-        if (!name) sr.getElementById('e-name').focus();
-        return;
-      }
+      const modal   = sr.getElementById('modal-edit');
+      const choreId = modal.dataset.choreId;
+      const name    = sr.getElementById('e-name').value.trim();
+      const desc    = sr.getElementById('e-desc').value.trim();
+      const value   = parseFloat(sr.getElementById('e-value').value);
+      const recur   = sr.getElementById('e-recur').value||'manual';
+      const occ     = parseInt(sr.getElementById('e-occ').value)||1;
+      const category= sr.getElementById('e-category').value||DEFAULT_CATEGORY;
+      const payMode = occ>1?(sr.getElementById('e-paymode').value||'per_occurrence'):'per_occurrence';
+      if (!name||!value) { if(!name) sr.getElementById('e-name').focus(); return; }
       this._closeModal('modal-edit');
-      this._callService('update_chore', {
-        chore_id: choreId, name, value, recurrence: recur,
-        occurrences_required: occ, pay_mode: payMode,
-        category, description: desc || null,
-      });
+      this._callService('update_chore', { chore_id:choreId, name, value, recurrence:recur,
+        occurrences_required:occ, pay_mode:payMode, category, description:desc||null });
     });
 
     sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
     sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
-      const days = parseInt(sr.getElementById('m-holiday-days').value) || 7;
+      const days = parseInt(sr.getElementById('m-holiday-days').value)||7;
       this._closeModal('modal-holiday');
-      const until = new Date();
-      until.setDate(until.getDate() + days);
+      const until = new Date(); until.setDate(until.getDate()+days);
       this._holidayUntil = until.toISOString();
-      this._callService('set_holiday_mode', { days });
-      this._updateDOM();
+      this._callService('set_holiday_mode', {days}); this._updateDOM();
     });
 
     sr.getElementById('m-pay-cancel')?.addEventListener('click', () => this._closeModal('modal-pay'));
     sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
-      const child = this._activeChild;
-      if (!child) return;
+      const child = this._activeChild; if (!child) return;
       this._closeModal('modal-pay');
-      this._optimisticPaid.set(child.childEntryId, Date.now() + OPTIMISTIC_TTL_MS);
-      this._syncFromHass();
-      this._updateDOM();
-      this._callService('mark_paid', { child_entry_id: child.childEntryId });
+      this._optimisticPaid.set(child.childEntryId, Date.now()+OPTIMISTIC_TTL_MS);
+      this._syncFromHass(); this._updateDOM();
+      this._callService('mark_paid', {child_entry_id:child.childEntryId});
     });
 
     sr.getElementById('m-pause-cancel')?.addEventListener('click', () => this._closeModal('modal-pause'));
     sr.getElementById('m-pause-submit')?.addEventListener('click', () => {
       const choreId = sr.getElementById('modal-pause').dataset.choreId;
       const rawDays = sr.getElementById('m-pause-days').value.trim();
-      const days    = rawDays === '' ? null : parseInt(rawDays, 10);
+      const days    = rawDays==='' ? null : parseInt(rawDays,10);
       this._closeModal('modal-pause');
-      const svcData = { chore_id: choreId };
-      if (days !== null) svcData.days = days;
+      const svcData = {chore_id:choreId};
+      if (days!==null) svcData.days=days;
       this._callService('pause_chore', svcData);
     });
   }
@@ -1014,92 +1020,75 @@ class HapmPanelCard extends HTMLElement {
 
     switch (action) {
       case 'set-child':
-        this._activeChildId = el.dataset.child;
-        this._updateDOM();
-        break;
+        this._activeChildId = el.dataset.child; this._updateDOM(); break;
 
       case 'open-add-form': {
         sr.getElementById('m-category').innerHTML = categoryOptionsHTML(DEFAULT_CATEGORY);
-        sr.getElementById('m-name').value    = '';
-        sr.getElementById('m-desc').value    = '';
-        sr.getElementById('m-value').value   = '';
-        sr.getElementById('m-recur').value   = 'weekly';
-        sr.getElementById('m-occ').value     = '1';
-        sr.getElementById('m-paymode').value = 'per_occurrence';
+        sr.getElementById('m-name').value=''; sr.getElementById('m-desc').value='';
+        sr.getElementById('m-value').value=''; sr.getElementById('m-recur').value='weekly';
+        sr.getElementById('m-occ').value='1'; sr.getElementById('m-paymode').value='per_occurrence';
         sr.getElementById('m-paymode-row')?.classList.remove('visible');
-        const indRadio = sr.querySelector('#m-assign-group input[value=individual]');
-        if (indRadio) { indRadio.checked = true; syncOptionGroup(sr.getElementById('m-assign-group')); }
-        const fullRadio = sr.querySelector('#m-split-group input[value=full]');
-        if (fullRadio) { fullRadio.checked = true; syncOptionGroup(sr.getElementById('m-split-group')); }
+        const indRadio=sr.querySelector('#m-assign-group input[value=individual]');
+        if(indRadio){indRadio.checked=true;syncOptionGroup(sr.getElementById('m-assign-group'));}
+        const fullRadio=sr.querySelector('#m-split-group input[value=full]');
+        if(fullRadio){fullRadio.checked=true;syncOptionGroup(sr.getElementById('m-split-group'));}
         sr.getElementById('m-assign-row')?.classList.remove('visible');
         sr.getElementById('m-split-row')?.classList.remove('visible');
-        sr.getElementById('m-children').innerHTML = this._children.map(c => `
+        sr.getElementById('m-children').innerHTML = this._children.map(c=>`
           <label class="hapm-child-row">
-            <input type="checkbox" value="${esc(c.childEntryId)}"
-              ${c.childEntryId === this._activeChildId ? 'checked' : ''}>
+            <input type="checkbox" value="${esc(c.childEntryId)}" ${c.childEntryId===this._activeChildId?'checked':''}>
             <span class="hapm-cdot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
             <span class="cname">${esc(c.childName)}</span>
           </label>`).join('');
-        sr.getElementById('m-children')?.addEventListener('change', () => {
-          this._refreshAddMultiSections();
-          syncOptionGroup(sr.getElementById('m-assign-group'));
-          syncOptionGroup(sr.getElementById('m-split-group'));
-        });
         this._openModal('modal-add');
-        setTimeout(() => sr.getElementById('m-name')?.focus(), 80);
+        setTimeout(()=>sr.getElementById('m-name')?.focus(),80);
         break;
       }
 
       case 'open-edit': {
-        let chore;
-        try { chore = JSON.parse(el.dataset.choreJson); } catch { break; }
-        const modal = sr.getElementById('modal-edit');
-        modal.dataset.choreId = chore.id;
-        sr.getElementById('e-category').innerHTML = categoryOptionsHTML(chore.category || DEFAULT_CATEGORY);
-        sr.getElementById('e-name').value    = chore.name  || '';
-        sr.getElementById('e-desc').value    = getDesc(chore);
-        sr.getElementById('e-value').value   = chore.value || '';
-        sr.getElementById('e-recur').value   = chore.recurrence || 'manual';
-        const occ = chore.occurrences_required || 1;
-        sr.getElementById('e-occ').value     = occ;
-        sr.getElementById('e-paymode').value = chore.pay_mode || 'per_occurrence';
-        sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ > 1);
+        let chore; try { chore=JSON.parse(el.dataset.choreJson); } catch { break; }
+        const modal=sr.getElementById('modal-edit');
+        modal.dataset.choreId=chore.id;
+        sr.getElementById('e-category').innerHTML=categoryOptionsHTML(chore.category||DEFAULT_CATEGORY);
+        sr.getElementById('e-name').value=chore.name||'';
+        sr.getElementById('e-desc').value=getDesc(chore);
+        sr.getElementById('e-value').value=chore.value||'';
+        sr.getElementById('e-recur').value=chore.recurrence||'manual';
+        const occ=chore.occurrences_required||1;
+        sr.getElementById('e-occ').value=occ;
+        sr.getElementById('e-paymode').value=chore.pay_mode||'per_occurrence';
+        sr.getElementById('e-paymode-row')?.classList.toggle('visible',occ>1);
         this._openModal('modal-edit');
-        setTimeout(() => sr.getElementById('e-name')?.focus(), 80);
+        setTimeout(()=>sr.getElementById('e-name')?.focus(),80);
         break;
       }
 
       case 'open-pay': {
-        const child = this._activeChild;
-        if (!child || child.balance <= 0) return;
-        sr.getElementById('m-pay-msg').innerHTML =
-          `Pay <strong>${esc(child.childName)}</strong> ${fmtMoney(child.balance, child.currency)}?`;
-        this._openModal('modal-pay');
-        break;
+        const child=this._activeChild;
+        if(!child||child.balance<=0) return;
+        sr.getElementById('m-pay-msg').innerHTML=`Pay <strong>${esc(child.childName)}</strong> ${fmtMoney(child.balance,child.currency)}?`;
+        this._openModal('modal-pay'); break;
       }
 
       case 'open-pause': {
-        const modal = sr.getElementById('modal-pause');
-        modal.dataset.choreId = el.dataset.chore;
-        sr.getElementById('m-pause-chore-name').textContent = el.dataset.choreName || '';
-        sr.getElementById('m-pause-days').value = '';
+        const modal=sr.getElementById('modal-pause');
+        modal.dataset.choreId=el.dataset.chore;
+        sr.getElementById('m-pause-chore-name').textContent=el.dataset.choreName||'';
+        sr.getElementById('m-pause-days').value='';
         this._openModal('modal-pause');
-        setTimeout(() => sr.getElementById('m-pause-days')?.focus(), 80);
+        setTimeout(()=>sr.getElementById('m-pause-days')?.focus(),80);
         break;
       }
 
       case 'complete':
         el.closest('.chore-card')?.classList.add('completing');
-        this._callService('complete_chore', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
-        break;
+        this._callService('complete_chore',{chore_id:el.dataset.chore,child_entry_id:el.dataset.child}); break;
 
       case 'log-occ':
-        this._callService('log_occurrence', { chore_id: el.dataset.chore, child_entry_id: el.dataset.child });
-        break;
+        this._callService('log_occurrence',{chore_id:el.dataset.chore,child_entry_id:el.dataset.child}); break;
 
       case 'resume':
-        this._callService('resume_chore', { chore_id: el.dataset.chore });
-        break;
+        this._callService('resume_chore',{chore_id:el.dataset.chore}); break;
     }
   }
 
