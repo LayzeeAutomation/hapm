@@ -1,14 +1,16 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.24
+ * HAPM Pocket Money Panel Card  v0.1.25
  *
- * Changes vs 0.1.23:
- *   - Edit modal now has a 🗑 Delete Chore button at the bottom
- *   - Tapping Delete shows an inline confirmation ("Are you sure?") with
- *     Cancel and Confirm Delete buttons to prevent accidents
- *   - Confirmed delete calls the hapm.delete_chore service and closes the modal
+ * Changes vs 0.1.24:
+ *   - Fix: open-edit was silently breaking because data-chore-json was
+ *     HTML-escaped (& quot; etc.) so JSON.parse always threw and the handler
+ *     hit `catch { break }` — meaning choreId was never set on the modal,
+ *     so both Save and Delete did nothing / reported "cannot find chore".
+ *   - Fix: replaced data-chore-json with individual data-* scalar attributes
+ *     on every Edit button — no JSON parsing needed at all.
  */
 
-const HAPM_VERSION = '0.1.24';
+const HAPM_VERSION = '0.1.25';
 const CURRENCY_DEFAULT = '\u00a3';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -96,6 +98,21 @@ function categoryOptionsHTML(selected = DEFAULT_CATEGORY) {
     const {emoji,label} = CHORE_CATEGORIES[k];
     return `<option value="${k}"${k===selected?' selected':''}>${emoji} ${label}</option>`;
   }).join('');
+}
+
+/** Build the data-* attributes string for an Edit button — no JSON involved. */
+function editAttrs(c) {
+  return [
+    `data-action="open-edit"`,
+    `data-chore-id="${esc(c.id)}"`,
+    `data-chore-name="${esc(c.name)}"`,
+    `data-chore-desc="${esc(c.description||'')}"`,
+    `data-chore-value="${esc(c.value)}"`,
+    `data-chore-recur="${esc(c.recurrence||'manual')}"`,
+    `data-chore-occ="${esc(c.occurrences_required||1)}"`,
+    `data-chore-paymode="${esc(c.pay_mode||'per_occurrence')}"`,
+    `data-chore-category="${esc(c.category||DEFAULT_CATEGORY)}"`,
+  ].join(' ');
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -764,7 +781,6 @@ class HapmPanelCard extends HTMLElement {
     const isShared = c.pay_split_mode  === 'shared';
     const done     = c.occurrences_completed || 0;
     const total    = c.occurrences_required  || 1;
-    const choreJson = esc(JSON.stringify(c));
 
     let borderColour = '';
     let statusPill = '';
@@ -806,7 +822,7 @@ class HapmPanelCard extends HTMLElement {
         </div>
         <div class="chore-actions">
           ${resumeBtn}
-          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">\u270f\ufe0f Edit</button>
+          <button class="btn btn-ghost" ${editAttrs(c)}>\u270f\ufe0f Edit</button>
           <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">\u23f8 Pause</button>
         </div>
       </div>
@@ -822,7 +838,6 @@ class HapmPanelCard extends HTMLElement {
     const isMulti  = total > 1;
     const isTeam   = c.assignment_mode === 'team';
     const isShared = c.pay_split_mode  === 'shared';
-    const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card paused-card">
       <div>
         <div class="chore-top">
@@ -840,8 +855,8 @@ class HapmPanelCard extends HTMLElement {
           </div>
         </div>
         <div class="chore-actions">
-          <button class="btn btn-warn"  data-action="resume"    data-chore="${esc(c.id)}">\u25b6 Resume</button>
-          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">\u270f\ufe0f Edit</button>
+          <button class="btn btn-warn"  data-action="resume" data-chore="${esc(c.id)}">\u25b6 Resume</button>
+          <button class="btn btn-ghost" ${editAttrs(c)}>\u270f\ufe0f Edit</button>
         </div>
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
@@ -857,7 +872,6 @@ class HapmPanelCard extends HTMLElement {
     const done     = c.occurrences_completed || 0;
     const total    = c.occurrences_required  || 1;
     const nextOcc  = done + 1;
-    const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card${isOpt?' optimistic':''}">
       <div>
         <div class="chore-top">
@@ -879,7 +893,7 @@ class HapmPanelCard extends HTMLElement {
             ? `<button class="btn btn-primary" data-action="log-occ"  data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log ${nextOcc}/${total} \u2713</button>`
             : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done \u2713</button>`}
           <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">Pause</button>
-          <button class="btn btn-ghost" data-action="open-edit"  data-chore-json="${choreJson}">\u270f\ufe0f</button>
+          <button class="btn btn-ghost" ${editAttrs(c)}>\u270f\ufe0f</button>
         </div>` : ''}
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
@@ -1092,19 +1106,18 @@ class HapmPanelCard extends HTMLElement {
       }
 
       case 'open-edit': {
-        let chore; try { chore=JSON.parse(el.dataset.choreJson); } catch { break; }
-        const modal=sr.getElementById('modal-edit');
-        modal.dataset.choreId=chore.id;
-        sr.getElementById('e-category').innerHTML=categoryOptionsHTML(chore.category||DEFAULT_CATEGORY);
-        sr.getElementById('e-name').value=chore.name||'';
-        sr.getElementById('e-desc').value=getDesc(chore);
-        sr.getElementById('e-value').value=chore.value||'';
-        sr.getElementById('e-recur').value=chore.recurrence||'manual';
-        const occ=chore.occurrences_required||1;
-        sr.getElementById('e-occ').value=occ;
-        sr.getElementById('e-paymode').value=chore.pay_mode||'per_occurrence';
-        sr.getElementById('e-paymode-row')?.classList.toggle('visible',occ>1);
-        // always hide confirm zone when opening
+        // Read individual data-* attributes — no JSON.parse needed
+        const modal = sr.getElementById('modal-edit');
+        modal.dataset.choreId = el.dataset.choreId;
+        const occ = parseInt(el.dataset.choreOcc)||1;
+        sr.getElementById('e-category').innerHTML = categoryOptionsHTML(el.dataset.choreCategory||DEFAULT_CATEGORY);
+        sr.getElementById('e-name').value    = el.dataset.choreName    || '';
+        sr.getElementById('e-desc').value    = el.dataset.choreDesc    || '';
+        sr.getElementById('e-value').value   = el.dataset.choreValue   || '';
+        sr.getElementById('e-recur').value   = el.dataset.choreRecur   || 'manual';
+        sr.getElementById('e-occ').value     = occ;
+        sr.getElementById('e-paymode').value = el.dataset.chorePaymode || 'per_occurrence';
+        sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ > 1);
         sr.getElementById('m-edit-delete-confirm')?.classList.remove('visible');
         this._openModal('modal-edit');
         setTimeout(()=>sr.getElementById('e-name')?.focus(),80);
