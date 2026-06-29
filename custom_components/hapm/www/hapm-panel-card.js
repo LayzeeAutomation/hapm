@@ -1,17 +1,23 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.19
+ * HAPM Pocket Money Panel Card  v0.1.20
  *
- * Changes vs 0.1.18:
- *   1. sensor.py now exposes occurrences_completed on each due/paused chore.
- *   2. Occurrence progress dots now fill correctly — completed dots are solid
- *      accent colour, remaining dots are hollow.
- *   3. "Log occurrence" button now reads "Log 1/3", "Log 2/3" etc. showing
- *      the next sequential occurrence number out of the total required.
- *   4. pay_mode also forwarded through sensor so it round-trips correctly.
+ * Changes vs 0.1.19:
+ *   When 2+ children are selected in Add Chore two new sections appear:
+ *
+ *   1. "How should they work?" (assignment mode)
+ *      - Individual — each child gets their own independent set of occurrences
+ *      - Team        — all children work towards the same shared occurrence target
+ *
+ *   2. "How should they be paid?" (pay split mode, only shown for Team chores)
+ *      - Each earns full value — every child earns the full chore value
+ *      - Split equally        — the value is divided equally between all children
+ *
+ *   Both values are forwarded correctly to the add_chore service call.
+ *   assignment_mode and pay_split_mode pills added to chore cards.
  */
 
-const HAPM_VERSION = '0.1.19';
-const CURRENCY_DEFAULT = '£';
+const HAPM_VERSION = '0.1.20';
+const CURRENCY_DEFAULT = '\u00a3';
 const OPTIMISTIC_TTL_MS = 15000;
 
 const COLOUR_MAP = {
@@ -19,7 +25,7 @@ const COLOUR_MAP = {
   orange: '#fdab43', gold: '#e8af34', green: '#6daa45',
   red: '#db4437', pink: '#e8619a', grey: '#9e9e9e',
 };
-const CHORE_ICONS = ['🧹','🛏️','🍽️','🐶','🌿','🧺','🚿','📚','🗑️','🧽'];
+const CHORE_ICONS = ['\ud83e\uddf9','\ud83d\udecf\ufe0f','\ud83c\udf7d\ufe0f','\ud83d\udc36','\ud83c\udf3f','\ud83e\uddfa','\ud83d\udebf','\ud83d\udcda','\ud83d\uddd1\ufe0f','\ud83e\uddfd'];
 
 function fmtMoney(v, sym = CURRENCY_DEFAULT) { return sym + Math.abs(v).toFixed(2); }
 function fmtDate(iso) {
@@ -111,10 +117,11 @@ const STYLES = `
   .chore-meta { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
   .pill { display:inline-flex; align-items:center; padding:2px 7px; border-radius:9999px;
     font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
-  .pill-due   { background:rgba(109,170,69,0.15); color:var(--success-color,#6daa45); }
-  .pill-multi { background:rgba(124,99,209,0.15); color:#7c63d1; }
-  .pill-recur { background:rgba(85,145,199,0.15); color:#5591c7; }
-  .pill-paused{ background:rgba(201,146,10,0.15); color:#c9920a; }
+  .pill-due    { background:rgba(109,170,69,0.15); color:var(--success-color,#6daa45); }
+  .pill-multi  { background:rgba(124,99,209,0.15); color:#7c63d1; }
+  .pill-recur  { background:rgba(85,145,199,0.15); color:#5591c7; }
+  .pill-paused { background:rgba(201,146,10,0.15); color:#c9920a; }
+  .pill-team   { background:rgba(232,97,154,0.15); color:#e8619a; }
   .occ-track { display:flex; gap:4px; margin-top:6px; align-items:center; }
   .occ-dot { width:10px; height:10px; border-radius:9999px; flex-shrink:0;
     border:1.5px solid #7c63d1; background:transparent; transition:background 200ms; }
@@ -182,11 +189,42 @@ const STYLES = `
   .hapm-btn-cancel { background:var(--secondary-background-color,#3a3a3c);
     color:var(--primary-text-color); }
   .hapm-btn-ok { background:#01696f; color:#fff; }
-  .hapm-paymode-row { display:none; margin-bottom:12px; }
-  .hapm-paymode-row.visible { display:block; }
+
+  /* conditional rows — hidden by default, toggled via JS */
+  .hapm-multi-row    { display:none; margin-bottom:12px; }
+  .hapm-multi-row.visible    { display:block; }
+  .hapm-team-row     { display:none; margin-bottom:12px; }
+  .hapm-team-row.visible     { display:block; }
+  .hapm-assign-row   { display:none; margin-bottom:12px; }
+  .hapm-assign-row.visible   { display:block; }
+  .hapm-split-row    { display:none; margin-bottom:12px; }
+  .hapm-split-row.visible    { display:block; }
+
+  /* segmented-style option buttons */
+  .hapm-option-group { display:grid; gap:8px; margin-bottom:12px; }
+  .hapm-option { display:flex; align-items:flex-start; gap:12px; padding:12px 14px;
+    border-radius:10px; border:1.5px solid var(--divider-color,#555);
+    cursor:pointer; transition:all 150ms; }
+  .hapm-option input[type=radio] { margin-top:2px; accent-color:#01696f;
+    width:16px; height:16px; flex-shrink:0; cursor:pointer; }
+  .hapm-option.selected { border-color:#01696f;
+    background:rgba(1,105,111,0.08); }
+  .hapm-option-title { font-size:14px; font-weight:600; line-height:1.3; }
+  .hapm-option-desc  { font-size:12px; color:var(--secondary-text-color);
+    margin-top:2px; line-height:1.4; }
+
   .hapm-confirm-msg { font-size:15px; line-height:1.5; margin-bottom:20px;
     text-align:center; color:var(--primary-text-color); }
 `;
+
+// ─── Helper: refresh option-group highlight after radio change ────────────────
+function syncOptionGroup(groupEl) {
+  if (!groupEl) return;
+  groupEl.querySelectorAll('.hapm-option').forEach(opt => {
+    const radio = opt.querySelector('input[type=radio]');
+    opt.classList.toggle('selected', radio?.checked ?? false);
+  });
+}
 
 // ─── Custom Element ───────────────────────────────────────────────────────────
 class HapmPanelCard extends HTMLElement {
@@ -285,6 +323,27 @@ class HapmPanelCard extends HTMLElement {
     );
   }
 
+  // ─── Read helpers for the Add form ───
+  _getAddAssignMode() {
+    const sr = this.shadowRoot;
+    return sr.querySelector('#m-assign-group input[type=radio]:checked')?.value || 'individual';
+  }
+  _getAddSplitMode() {
+    const sr = this.shadowRoot;
+    return sr.querySelector('#m-split-group input[type=radio]:checked')?.value || 'full';
+  }
+
+  // ─── Show/hide multi-child sections when checkbox selection changes ───
+  _refreshAddMultiSections() {
+    const sr = this.shadowRoot;
+    const checked = [...sr.querySelectorAll('#m-children input[type=checkbox]:checked')];
+    const multi = checked.length > 1;
+    sr.getElementById('m-assign-row')?.classList.toggle('visible', multi);
+    // Pay-split only makes sense for Team chores
+    const isTeam = multi && this._getAddAssignMode() === 'team';
+    sr.getElementById('m-split-row')?.classList.toggle('visible', isTeam);
+  }
+
   _buildDOM() {
     const sr = this.shadowRoot;
     sr.innerHTML = '';
@@ -297,19 +356,19 @@ class HapmPanelCard extends HTMLElement {
     card.className = 'hapm';
     card.innerHTML = `
       <div class="topbar">
-        <div class="topbar-title"><span style="font-size:20px">🐷</span> Pocket Money</div>
-        <button class="btn-holiday" id="btn-holiday">🏖 Holiday Mode</button>
+        <div class="topbar-title"><span style="font-size:20px">\ud83d\udc37</span> Pocket Money</div>
+        <button class="btn-holiday" id="btn-holiday">\ud83c\udfd6 Holiday Mode</button>
       </div>
       <div class="child-tabs" id="child-tabs"></div>
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label">Balance</div>
-          <div class="kpi-value" id="kpi-balance">£0.00</div>
+          <div class="kpi-value" id="kpi-balance">\u00a30.00</div>
           <div class="kpi-sub">Outstanding</div></div>
         <div class="kpi"><div class="kpi-label">Due Now</div>
           <div class="kpi-value" id="kpi-due">0</div>
           <div class="kpi-sub" id="kpi-due-sub">chores</div></div>
         <div class="kpi"><div class="kpi-label">Last Paid</div>
-          <div class="kpi-value" id="kpi-lastpaid" style="font-size:14px">—</div>
+          <div class="kpi-value" id="kpi-lastpaid" style="font-size:14px">\u2014</div>
           <div class="kpi-sub">&nbsp;</div></div>
       </div>
       <div class="nav">
@@ -326,16 +385,19 @@ class HapmPanelCard extends HTMLElement {
       <div class="hapm-backdrop hidden" id="modal-add">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
-          <div class="hapm-title">➕ Add Chore</div>
+          <div class="hapm-title">\u2795 Add Chore</div>
+
           <label class="hapm-label">Chore Name</label>
           <input class="hapm-input" id="m-name" type="text" placeholder="e.g. Tidy bedroom"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
+
           <label class="hapm-label">Description (optional)</label>
-          <input class="hapm-input" id="m-desc" type="text" placeholder="Extra detail…"
+          <input class="hapm-input" id="m-desc" type="text" placeholder="Extra detail\u2026"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
+
           <div class="hapm-2col">
             <div>
-              <label class="hapm-label">Value (£)</label>
+              <label class="hapm-label">Value (\u00a3)</label>
               <input class="hapm-input" id="m-value" type="number"
                 inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
             </div>
@@ -349,17 +411,63 @@ class HapmPanelCard extends HTMLElement {
               </select>
             </div>
           </div>
+
           <label class="hapm-label">Occurrences needed</label>
           <input class="hapm-input" id="m-occ" type="number" inputmode="numeric" min="1" value="1">
-          <div class="hapm-paymode-row" id="m-paymode-row">
+
+          <div class="hapm-multi-row" id="m-paymode-row">
             <label class="hapm-label">Pay Mode</label>
             <select class="hapm-select" id="m-paymode">
-              <option value="per_occurrence">Per occurrence — equal share each time</option>
-              <option value="on_completion">All at once — full value when all done</option>
+              <option value="per_occurrence">Per occurrence \u2014 equal share each time</option>
+              <option value="on_completion">All at once \u2014 full value when all done</option>
             </select>
           </div>
+
           <label class="hapm-label">Assign To</label>
           <div class="hapm-children-list" id="m-children"></div>
+
+          <!-- shown only when 2+ children checked -->
+          <div class="hapm-assign-row" id="m-assign-row">
+            <label class="hapm-label">How should they work?</label>
+            <div class="hapm-option-group" id="m-assign-group">
+              <label class="hapm-option selected">
+                <input type="radio" name="m-assign" value="individual" checked>
+                <div>
+                  <div class="hapm-option-title">\ud83d\udc64 Individual</div>
+                  <div class="hapm-option-desc">Each child gets their own set of occurrences to complete independently.</div>
+                </div>
+              </label>
+              <label class="hapm-option">
+                <input type="radio" name="m-assign" value="team">
+                <div>
+                  <div class="hapm-option-title">\ud83d\udc6a Team</div>
+                  <div class="hapm-option-desc">All children work towards the same shared occurrence target together.</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- shown only when Team is selected -->
+          <div class="hapm-split-row" id="m-split-row">
+            <label class="hapm-label">How should they be paid?</label>
+            <div class="hapm-option-group" id="m-split-group">
+              <label class="hapm-option selected">
+                <input type="radio" name="m-split" value="full" checked>
+                <div>
+                  <div class="hapm-option-title">\ud83d\udcb0 Each earns full value</div>
+                  <div class="hapm-option-desc">Every child in the team earns the full chore value.</div>
+                </div>
+              </label>
+              <label class="hapm-option">
+                <input type="radio" name="m-split" value="shared">
+                <div>
+                  <div class="hapm-option-title">\u2797 Split equally</div>
+                  <div class="hapm-option-desc">The total value is divided equally between all children in the team.</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
           <div class="hapm-actions">
             <button class="hapm-btn hapm-btn-cancel" id="m-add-cancel">Cancel</button>
             <button class="hapm-btn hapm-btn-ok"     id="m-add-submit">Add Chore</button>
@@ -371,7 +479,7 @@ class HapmPanelCard extends HTMLElement {
       <div class="hapm-backdrop hidden" id="modal-edit">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
-          <div class="hapm-title">✏️ Edit Chore</div>
+          <div class="hapm-title">\u270f\ufe0f Edit Chore</div>
           <label class="hapm-label">Chore Name</label>
           <input class="hapm-input" id="e-name" type="text"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
@@ -380,7 +488,7 @@ class HapmPanelCard extends HTMLElement {
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
           <div class="hapm-2col">
             <div>
-              <label class="hapm-label">Value (£)</label>
+              <label class="hapm-label">Value (\u00a3)</label>
               <input class="hapm-input" id="e-value" type="number"
                 inputmode="decimal" min="0.01" step="0.01">
             </div>
@@ -396,11 +504,11 @@ class HapmPanelCard extends HTMLElement {
           </div>
           <label class="hapm-label">Occurrences needed</label>
           <input class="hapm-input" id="e-occ" type="number" inputmode="numeric" min="1">
-          <div class="hapm-paymode-row" id="e-paymode-row">
+          <div class="hapm-multi-row" id="e-paymode-row">
             <label class="hapm-label">Pay Mode</label>
             <select class="hapm-select" id="e-paymode">
-              <option value="per_occurrence">Per occurrence — equal share each time</option>
-              <option value="on_completion">All at once — full value when all done</option>
+              <option value="per_occurrence">Per occurrence \u2014 equal share each time</option>
+              <option value="on_completion">All at once \u2014 full value when all done</option>
             </select>
           </div>
           <div class="hapm-actions">
@@ -414,7 +522,7 @@ class HapmPanelCard extends HTMLElement {
       <div class="hapm-backdrop hidden" id="modal-holiday">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
-          <div class="hapm-title">🏖 Holiday Mode</div>
+          <div class="hapm-title">\ud83c\udfd6 Holiday Mode</div>
           <label class="hapm-label">How many days are you away?</label>
           <input class="hapm-input" id="m-holiday-days" type="number"
             inputmode="numeric" min="1" max="365" value="7">
@@ -429,7 +537,7 @@ class HapmPanelCard extends HTMLElement {
       <div class="hapm-backdrop hidden" id="modal-pay">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
-          <div class="hapm-title">💸 Confirm Payment</div>
+          <div class="hapm-title">\ud83d\udcb8 Confirm Payment</div>
           <div class="hapm-confirm-msg" id="m-pay-msg"></div>
           <div class="hapm-actions">
             <button class="hapm-btn hapm-btn-cancel" id="m-pay-cancel">Cancel</button>
@@ -442,7 +550,7 @@ class HapmPanelCard extends HTMLElement {
       <div class="hapm-backdrop hidden" id="modal-pause">
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
-          <div class="hapm-title">⏸ Pause Chore</div>
+          <div class="hapm-title">\u23f8 Pause Chore</div>
           <div class="hapm-confirm-msg" id="m-pause-chore-name" style="text-align:left;margin-bottom:16px;font-weight:600"></div>
           <label class="hapm-label">Pause for how many days?</label>
           <input class="hapm-input" id="m-pause-days" type="number"
@@ -468,8 +576,8 @@ class HapmPanelCard extends HTMLElement {
     if (btnH) {
       const active = this._holidayUntil && new Date(this._holidayUntil) > new Date();
       btnH.textContent = active
-        ? `🏖 Holiday — ${daysRemaining(this._holidayUntil)}d left`
-        : '🏖 Holiday Mode';
+        ? `\ud83c\udfd6 Holiday \u2014 ${daysRemaining(this._holidayUntil)}d left`
+        : '\ud83c\udfd6 Holiday Mode';
       btnH.classList.toggle('active', !!active);
     }
 
@@ -499,7 +607,7 @@ class HapmPanelCard extends HTMLElement {
       const dueSubEl = sr.getElementById('kpi-due-sub');
       if (dueSubEl) dueSubEl.textContent = 'chore' + (n !== 1 ? 's' : '');
       const lpEl = sr.getElementById('kpi-lastpaid');
-      if (lpEl) lpEl.textContent = child.lastPaid ? fmtDate(child.lastPaid) : '—';
+      if (lpEl) lpEl.textContent = child.lastPaid ? fmtDate(child.lastPaid) : '\u2014';
       const badge = sr.getElementById('nav-badge');
       if (badge) { badge.textContent = n; badge.style.display = n ? '' : 'none'; }
       const pbadge = sr.getElementById('nav-paused-badge');
@@ -526,24 +634,24 @@ class HapmPanelCard extends HTMLElement {
     } else {
       panel.innerHTML = `
         <div style="margin-bottom:10px"><strong style="font-size:13px">Payment Ledger</strong></div>
-        <div class="empty" style="padding:16px"><div class="empty-icon">📒</div>
+        <div class="empty" style="padding:16px"><div class="empty-icon">\ud83d\udcd2</div>
           Full ledger in sensor attribute:<br><br>
           <code style="font-size:11px;background:var(--secondary-background-color);padding:4px 8px;border-radius:6px">
-            sensor.&lt;child&gt;_pocket_money_balance → ledger
+            sensor.&lt;child&gt;_pocket_money_balance \u2192 ledger
           </code>
         </div>`;
     }
   }
 
   _choresPanelHTML(child) {
-    if (!child) return `<div class="empty"><div class="empty-icon">👶</div>No children configured.<br>Add a child in Settings → Integrations → HAPM.</div>`;
+    if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.<br>Add a child in Settings \u2192 Integrations \u2192 HAPM.</div>`;
     const chores = child.dueChores || [];
     const payBtn = child.balance > 0
-      ? `<button class="btn-pay" data-action="open-pay">💸 Pay ${esc(child.childName)} — ${fmtMoney(child.balance, child.currency)}</button>`
+      ? `<button class="btn-pay" data-action="open-pay">\ud83d\udcb8 Pay ${esc(child.childName)} \u2014 ${fmtMoney(child.balance, child.currency)}</button>`
       : '';
     const choreHTML = chores.length
       ? chores.map(c => this._choreCardHTML(c, child)).join('')
-      : '<div class="empty"><div class="empty-icon">✅</div>All done! No chores due right now.</div>';
+      : '<div class="empty"><div class="empty-icon">\u2705</div>All done! No chores due right now.</div>';
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <strong style="font-size:13px">Due Chores</strong>
@@ -553,10 +661,10 @@ class HapmPanelCard extends HTMLElement {
   }
 
   _pausedPanelHTML(child) {
-    if (!child) return `<div class="empty"><div class="empty-icon">👶</div>No children configured.</div>`;
+    if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.</div>`;
     const chores = child.pausedChores || [];
     if (!chores.length) {
-      return `<div class="empty"><div class="empty-icon">▶️</div>No paused chores — everything is active.</div>`;
+      return `<div class="empty"><div class="empty-icon">\u25b6\ufe0f</div>No paused chores \u2014 everything is active.</div>`;
     }
     return `
       <div style="margin-bottom:10px"><strong style="font-size:13px">Paused Chores</strong></div>
@@ -569,6 +677,8 @@ class HapmPanelCard extends HTMLElement {
     const done     = c.occurrences_completed || 0;
     const total    = c.occurrences_required  || 1;
     const isMulti  = total > 1;
+    const isTeam   = c.assignment_mode === 'team';
+    const isShared = c.pay_split_mode  === 'shared';
     const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card paused-card">
       <div>
@@ -578,8 +688,9 @@ class HapmPanelCard extends HTMLElement {
             <div class="chore-name">${esc(c.name)}</div>
             ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
             <div class="chore-meta">
-              <span class="pill pill-paused">⏸ ${esc(label)}</span>
-              ${isMulti ? `<span class="pill pill-multi">${done}/${total}×</span>` : ''}
+              <span class="pill pill-paused">\u23f8 ${esc(label)}</span>
+              ${isMulti ? `<span class="pill pill-multi">${done}/${total}\u00d7</span>` : ''}
+              ${isTeam  ? `<span class="pill pill-team">\ud83d\udc6a Team${isShared ? ' \u00f7' : ''}</span>` : ''}
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
             </div>
             ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i) =>
@@ -587,8 +698,8 @@ class HapmPanelCard extends HTMLElement {
           </div>
         </div>
         <div class="chore-actions">
-          <button class="btn btn-warn"  data-action="resume" data-chore="${esc(c.id)}">▶ Resume</button>
-          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">✏️ Edit</button>
+          <button class="btn btn-warn"  data-action="resume" data-chore="${esc(c.id)}">\u25b6 Resume</button>
+          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">\u270f\ufe0f Edit</button>
         </div>
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
@@ -598,6 +709,8 @@ class HapmPanelCard extends HTMLElement {
   _choreCardHTML(c, child) {
     const isMulti  = c.occurrences_required > 1;
     const isOpt    = !!c._optimistic;
+    const isTeam   = c.assignment_mode === 'team';
+    const isShared = c.pay_split_mode  === 'shared';
     const desc     = getDesc(c);
     const done     = c.occurrences_completed || 0;
     const total    = c.occurrences_required  || 1;
@@ -608,12 +721,13 @@ class HapmPanelCard extends HTMLElement {
         <div class="chore-top">
           <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
           <div>
-            <div class="chore-name">${esc(c.name)}${isOpt ? ' <span style="font-size:10px;opacity:0.5">(saving…)</span>' : ''}</div>
+            <div class="chore-name">${esc(c.name)}${isOpt ? ' <span style="font-size:10px;opacity:0.5">(saving\u2026)</span>' : ''}</div>
             ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
             <div class="chore-meta">
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
-              ${isMulti ? `<span class="pill pill-multi">${done}/${total}×</span>` : ''}
-              ${!isOpt ? '<span class="pill pill-due">Due</span>' : ''}
+              ${isMulti ? `<span class="pill pill-multi">${done}/${total}\u00d7</span>` : ''}
+              ${isTeam  ? `<span class="pill pill-team">\ud83d\udc6a Team${isShared ? ' \u00f7' : ''}</span>` : ''}
+              ${!isOpt  ? '<span class="pill pill-due">Due</span>' : ''}
             </div>
             ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i) =>
               `<span class="occ-dot${i < done ? ' done' : ''}"></span>`).join('')}</div>` : ''}
@@ -621,10 +735,10 @@ class HapmPanelCard extends HTMLElement {
         </div>
         ${!isOpt ? `<div class="chore-actions">
           ${isMulti
-            ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log ${nextOcc}/${total} ✓</button>`
-            : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done ✓</button>`}
+            ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log ${nextOcc}/${total} \u2713</button>`
+            : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done \u2713</button>`}
           <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">Pause</button>
-          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">✏️</button>
+          <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">\u270f\ufe0f</button>
         </div>` : ''}
       </div>
       <div class="chore-value">${fmtMoney(c.value, child.currency)}</div>
@@ -657,11 +771,32 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
+    // ── Add form ──
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
+
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value) || 1;
-      sr.getElementById('m-paymode-row').classList.toggle('visible', occ > 1);
+      sr.getElementById('m-paymode-row')?.classList.toggle('visible', occ > 1);
     });
+
+    // When any checkbox in the children list changes, re-evaluate multi sections
+    sr.getElementById('m-children')?.addEventListener('change', () => {
+      this._refreshAddMultiSections();
+      syncOptionGroup(sr.getElementById('m-assign-group'));
+      syncOptionGroup(sr.getElementById('m-split-group'));
+    });
+
+    // When assignment-mode radio changes, toggle split row
+    sr.getElementById('m-assign-group')?.addEventListener('change', () => {
+      this._refreshAddMultiSections();
+      syncOptionGroup(sr.getElementById('m-assign-group'));
+    });
+
+    // Highlight selected split option
+    sr.getElementById('m-split-group')?.addEventListener('change', () => {
+      syncOptionGroup(sr.getElementById('m-split-group'));
+    });
+
     sr.getElementById('m-add-submit')?.addEventListener('click', () => {
       const name    = sr.getElementById('m-name').value.trim();
       const desc    = sr.getElementById('m-desc').value.trim();
@@ -675,30 +810,41 @@ class HapmPanelCard extends HTMLElement {
         if (!name) sr.getElementById('m-name').focus();
         return;
       }
+
+      const isMultiChild   = assigned.length > 1;
+      const assignMode     = isMultiChild ? this._getAddAssignMode() : 'individual';
+      const splitMode      = (isMultiChild && assignMode === 'team') ? this._getAddSplitMode() : 'full';
+
       this._closeModal('modal-add');
+
       const expiresAt = Date.now() + OPTIMISTIC_TTL_MS;
       assigned.forEach(childId => {
         if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
         this._optimisticChores[childId].push({
           id: '_opt_' + Date.now(), name, description: desc || null, value,
           recurrence: recur, occurrences_required: occ, occurrences_completed: 0,
+          assignment_mode: assignMode, pay_split_mode: splitMode,
           _optimistic: true, _expiresAt: expiresAt,
         });
       });
       this._syncFromHass();
       this._updateDOM();
+
       this._callService('add_chore', {
-        name, value, recurrence: recur, occurrences_required: occ, pay_mode: payMode,
-        assignment_mode: assigned.length === this._children.length ? 'team' : 'individual',
+        name, value, recurrence: recur, occurrences_required: occ,
+        pay_mode: payMode,
+        assignment_mode: assignMode,
+        pay_split_mode: splitMode,
         assigned_to: assigned,
         ...(desc ? { description: desc } : {}),
       });
     });
 
+    // ── Edit form ──
     sr.getElementById('m-edit-cancel')?.addEventListener('click', () => this._closeModal('modal-edit'));
     sr.getElementById('e-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('e-occ').value) || 1;
-      sr.getElementById('e-paymode-row').classList.toggle('visible', occ > 1);
+      sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ > 1);
     });
     sr.getElementById('m-edit-submit')?.addEventListener('click', () => {
       const modal   = sr.getElementById('modal-edit');
@@ -773,7 +919,15 @@ class HapmPanelCard extends HTMLElement {
         sr.getElementById('m-recur').value   = 'weekly';
         sr.getElementById('m-occ').value     = '1';
         sr.getElementById('m-paymode').value = 'per_occurrence';
-        sr.getElementById('m-paymode-row').classList.remove('visible');
+        sr.getElementById('m-paymode-row')?.classList.remove('visible');
+        // Reset assignment/split to defaults
+        const indRadio = sr.querySelector('#m-assign-group input[value=individual]');
+        if (indRadio) { indRadio.checked = true; syncOptionGroup(sr.getElementById('m-assign-group')); }
+        const fullRadio = sr.querySelector('#m-split-group input[value=full]');
+        if (fullRadio) { fullRadio.checked = true; syncOptionGroup(sr.getElementById('m-split-group')); }
+        // Hide multi-child sections until 2+ checked
+        sr.getElementById('m-assign-row')?.classList.remove('visible');
+        sr.getElementById('m-split-row')?.classList.remove('visible');
         sr.getElementById('m-children').innerHTML = this._children.map(c => `
           <label class="hapm-child-row">
             <input type="checkbox" value="${esc(c.childEntryId)}"
@@ -781,6 +935,12 @@ class HapmPanelCard extends HTMLElement {
             <span class="hapm-cdot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
             <span class="cname">${esc(c.childName)}</span>
           </label>`).join('');
+        // Re-bind change listener to freshly injected checkboxes
+        sr.getElementById('m-children')?.addEventListener('change', () => {
+          this._refreshAddMultiSections();
+          syncOptionGroup(sr.getElementById('m-assign-group'));
+          syncOptionGroup(sr.getElementById('m-split-group'));
+        });
         this._openModal('modal-add');
         setTimeout(() => sr.getElementById('m-name')?.focus(), 80);
         break;
@@ -798,7 +958,7 @@ class HapmPanelCard extends HTMLElement {
         const occ = chore.occurrences_required || 1;
         sr.getElementById('e-occ').value     = occ;
         sr.getElementById('e-paymode').value = chore.pay_mode || 'per_occurrence';
-        sr.getElementById('e-paymode-row').classList.toggle('visible', occ > 1);
+        sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ > 1);
         this._openModal('modal-edit');
         setTimeout(() => sr.getElementById('e-name')?.focus(), 80);
         break;
