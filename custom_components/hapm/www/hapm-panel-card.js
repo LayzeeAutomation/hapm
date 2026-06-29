@@ -1,22 +1,19 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.20
+ * HAPM Pocket Money Panel Card  v0.1.21
  *
- * Changes vs 0.1.19:
- *   When 2+ children are selected in Add Chore two new sections appear:
+ * Changes vs 0.1.20:
+ *   Chore icon is now driven by a selectable Category rather than a random
+ *   hash of the chore name.
  *
- *   1. "How should they work?" (assignment mode)
- *      - Individual — each child gets their own independent set of occurrences
- *      - Team        — all children work towards the same shared occurrence target
- *
- *   2. "How should they be paid?" (pay split mode, only shown for Team chores)
- *      - Each earns full value — every child earns the full chore value
- *      - Split equally        — the value is divided equally between all children
- *
- *   Both values are forwarded correctly to the add_chore service call.
- *   assignment_mode and pay_split_mode pills added to chore cards.
+ *   - CHORE_CATEGORIES: 16 categories, each with an emoji + label.
+ *   - Add Chore form: new "Category" dropdown before the name field.
+ *   - Edit Chore form: same dropdown, pre-filled from chore.category.
+ *   - Chore cards (due + paused): icon = CHORE_CATEGORIES[category].emoji,
+ *     falling back to the old hash lookup for legacy chores without a category.
+ *   - category forwarded in add_chore and update_chore service calls.
  */
 
-const HAPM_VERSION = '0.1.20';
+const HAPM_VERSION = '0.1.21';
 const CURRENCY_DEFAULT = '\u00a3';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -25,7 +22,35 @@ const COLOUR_MAP = {
   orange: '#fdab43', gold: '#e8af34', green: '#6daa45',
   red: '#db4437', pink: '#e8619a', grey: '#9e9e9e',
 };
-const CHORE_ICONS = ['\ud83e\uddf9','\ud83d\udecf\ufe0f','\ud83c\udf7d\ufe0f','\ud83d\udc36','\ud83c\udf3f','\ud83e\uddfa','\ud83d\udebf','\ud83d\udcda','\ud83d\uddd1\ufe0f','\ud83e\uddfd'];
+
+// ─── Chore categories ────────────────────────────────────────────────────────
+const CHORE_CATEGORIES = {
+  bedroom:    { emoji: '\ud83d\udecf\ufe0f', label: 'Bedroom' },
+  kitchen:    { emoji: '\ud83c\udf7d\ufe0f', label: 'Kitchen' },
+  bathroom:   { emoji: '\ud83d\udebf',       label: 'Bathroom' },
+  tidying:    { emoji: '\ud83e\uddf9',       label: 'Tidying' },
+  laundry:    { emoji: '\ud83e\uddfa',       label: 'Laundry' },
+  garden:     { emoji: '\ud83c\udf3f',       label: 'Garden' },
+  pet:        { emoji: '\ud83d\udc3e',       label: 'Pet Care' },
+  homework:   { emoji: '\ud83d\udcda',       label: 'Homework' },
+  recycling:  { emoji: '\ud83d\uddd1\ufe0f', label: 'Recycling' },
+  cooking:    { emoji: '\ud83d\udc68\u200d\ud83c\udf73', label: 'Cooking' },
+  shopping:   { emoji: '\ud83d\udecd\ufe0f', label: 'Shopping' },
+  exercise:   { emoji: '\ud83c\udfcb\ufe0f', label: 'Exercise' },
+  reading:    { emoji: '\ud83d\udcd6',       label: 'Reading' },
+  car:        { emoji: '\ud83d\ude97',       label: 'Car' },
+  tech:       { emoji: '\ud83d\udcbb',       label: 'Tech / Screens' },
+  other:      { emoji: '\u2b50',             label: 'Other' },
+};
+const CATEGORY_KEYS = Object.keys(CHORE_CATEGORIES);
+const DEFAULT_CATEGORY = 'tidying';
+
+// Legacy fallback (for chores saved before v0.1.21 without a category)
+const LEGACY_ICONS = ['\ud83e\uddf9','\ud83d\udecf\ufe0f','\ud83c\udf7d\ufe0f','\ud83d\udc36','\ud83c\udf3f','\ud83e\uddfa','\ud83d\udebf','\ud83d\udcda','\ud83d\uddd1\ufe0f','\ud83e\uddfd'];
+function choreIcon(c) {
+  if (c.category && CHORE_CATEGORIES[c.category]) return CHORE_CATEGORIES[c.category].emoji;
+  return LEGACY_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % LEGACY_ICONS.length];
+}
 
 function fmtMoney(v, sym = CURRENCY_DEFAULT) { return sym + Math.abs(v).toFixed(2); }
 function fmtDate(iso) {
@@ -53,6 +78,14 @@ function fmtPausedUntil(isoUntil) {
   return 'Until ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
 function getDesc(c) { return (c.description && c.description.trim()) ? c.description.trim() : ''; }
+
+// ─── Category <option> HTML ───────────────────────────────────────────────────
+function categoryOptionsHTML(selected = DEFAULT_CATEGORY) {
+  return CATEGORY_KEYS.map(k => {
+    const { emoji, label } = CHORE_CATEGORIES[k];
+    return `<option value="${k}"${k === selected ? ' selected' : ''}>${emoji} ${label}</option>`;
+  }).join('');
+}
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const STYLES = `
@@ -190,25 +223,22 @@ const STYLES = `
     color:var(--primary-text-color); }
   .hapm-btn-ok { background:#01696f; color:#fff; }
 
-  /* conditional rows — hidden by default, toggled via JS */
-  .hapm-multi-row    { display:none; margin-bottom:12px; }
-  .hapm-multi-row.visible    { display:block; }
-  .hapm-team-row     { display:none; margin-bottom:12px; }
-  .hapm-team-row.visible     { display:block; }
-  .hapm-assign-row   { display:none; margin-bottom:12px; }
-  .hapm-assign-row.visible   { display:block; }
-  .hapm-split-row    { display:none; margin-bottom:12px; }
-  .hapm-split-row.visible    { display:block; }
+  /* conditional rows */
+  .hapm-multi-row  { display:none; margin-bottom:12px; }
+  .hapm-multi-row.visible  { display:block; }
+  .hapm-assign-row { display:none; margin-bottom:12px; }
+  .hapm-assign-row.visible { display:block; }
+  .hapm-split-row  { display:none; margin-bottom:12px; }
+  .hapm-split-row.visible  { display:block; }
 
-  /* segmented-style option buttons */
+  /* segmented option buttons */
   .hapm-option-group { display:grid; gap:8px; margin-bottom:12px; }
   .hapm-option { display:flex; align-items:flex-start; gap:12px; padding:12px 14px;
     border-radius:10px; border:1.5px solid var(--divider-color,#555);
     cursor:pointer; transition:all 150ms; }
   .hapm-option input[type=radio] { margin-top:2px; accent-color:#01696f;
     width:16px; height:16px; flex-shrink:0; cursor:pointer; }
-  .hapm-option.selected { border-color:#01696f;
-    background:rgba(1,105,111,0.08); }
+  .hapm-option.selected { border-color:#01696f; background:rgba(1,105,111,0.08); }
   .hapm-option-title { font-size:14px; font-weight:600; line-height:1.3; }
   .hapm-option-desc  { font-size:12px; color:var(--secondary-text-color);
     margin-top:2px; line-height:1.4; }
@@ -217,7 +247,6 @@ const STYLES = `
     text-align:center; color:var(--primary-text-color); }
 `;
 
-// ─── Helper: refresh option-group highlight after radio change ────────────────
 function syncOptionGroup(groupEl) {
   if (!groupEl) return;
   groupEl.querySelectorAll('.hapm-option').forEach(opt => {
@@ -323,23 +352,18 @@ class HapmPanelCard extends HTMLElement {
     );
   }
 
-  // ─── Read helpers for the Add form ───
   _getAddAssignMode() {
-    const sr = this.shadowRoot;
-    return sr.querySelector('#m-assign-group input[type=radio]:checked')?.value || 'individual';
+    return this.shadowRoot.querySelector('#m-assign-group input[type=radio]:checked')?.value || 'individual';
   }
   _getAddSplitMode() {
-    const sr = this.shadowRoot;
-    return sr.querySelector('#m-split-group input[type=radio]:checked')?.value || 'full';
+    return this.shadowRoot.querySelector('#m-split-group input[type=radio]:checked')?.value || 'full';
   }
 
-  // ─── Show/hide multi-child sections when checkbox selection changes ───
   _refreshAddMultiSections() {
     const sr = this.shadowRoot;
     const checked = [...sr.querySelectorAll('#m-children input[type=checkbox]:checked')];
     const multi = checked.length > 1;
     sr.getElementById('m-assign-row')?.classList.toggle('visible', multi);
-    // Pay-split only makes sense for Team chores
     const isTeam = multi && this._getAddAssignMode() === 'team';
     sr.getElementById('m-split-row')?.classList.toggle('visible', isTeam);
   }
@@ -387,6 +411,22 @@ class HapmPanelCard extends HTMLElement {
           <div class="hapm-handle"></div>
           <div class="hapm-title">\u2795 Add Chore</div>
 
+          <div class="hapm-2col">
+            <div>
+              <label class="hapm-label">Category</label>
+              <select class="hapm-select" id="m-category">${categoryOptionsHTML()}</select>
+            </div>
+            <div>
+              <label class="hapm-label">Recurrence</label>
+              <select class="hapm-select" id="m-recur">
+                <option value="manual">Manual</option>
+                <option value="daily">Daily</option>
+                <option value="weekly" selected>Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+          </div>
+
           <label class="hapm-label">Chore Name</label>
           <input class="hapm-input" id="m-name" type="text" placeholder="e.g. Tidy bedroom"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
@@ -402,18 +442,10 @@ class HapmPanelCard extends HTMLElement {
                 inputmode="decimal" min="0.01" step="0.01" placeholder="0.50">
             </div>
             <div>
-              <label class="hapm-label">Recurrence</label>
-              <select class="hapm-select" id="m-recur">
-                <option value="manual">Manual</option>
-                <option value="daily">Daily</option>
-                <option value="weekly" selected>Weekly</option>
-                <option value="monthly">Monthly</option>
-              </select>
+              <label class="hapm-label">Occurrences</label>
+              <input class="hapm-input" id="m-occ" type="number" inputmode="numeric" min="1" value="1">
             </div>
           </div>
-
-          <label class="hapm-label">Occurrences needed</label>
-          <input class="hapm-input" id="m-occ" type="number" inputmode="numeric" min="1" value="1">
 
           <div class="hapm-multi-row" id="m-paymode-row">
             <label class="hapm-label">Pay Mode</label>
@@ -426,7 +458,6 @@ class HapmPanelCard extends HTMLElement {
           <label class="hapm-label">Assign To</label>
           <div class="hapm-children-list" id="m-children"></div>
 
-          <!-- shown only when 2+ children checked -->
           <div class="hapm-assign-row" id="m-assign-row">
             <label class="hapm-label">How should they work?</label>
             <div class="hapm-option-group" id="m-assign-group">
@@ -447,7 +478,6 @@ class HapmPanelCard extends HTMLElement {
             </div>
           </div>
 
-          <!-- shown only when Team is selected -->
           <div class="hapm-split-row" id="m-split-row">
             <label class="hapm-label">How should they be paid?</label>
             <div class="hapm-option-group" id="m-split-group">
@@ -480,6 +510,23 @@ class HapmPanelCard extends HTMLElement {
         <div class="hapm-sheet">
           <div class="hapm-handle"></div>
           <div class="hapm-title">\u270f\ufe0f Edit Chore</div>
+
+          <div class="hapm-2col">
+            <div>
+              <label class="hapm-label">Category</label>
+              <select class="hapm-select" id="e-category">${categoryOptionsHTML()}</select>
+            </div>
+            <div>
+              <label class="hapm-label">Recurrence</label>
+              <select class="hapm-select" id="e-recur">
+                <option value="manual">Manual</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
+          </div>
+
           <label class="hapm-label">Chore Name</label>
           <input class="hapm-input" id="e-name" type="text"
             autocomplete="off" autocorrect="off" autocapitalize="sentences">
@@ -493,17 +540,10 @@ class HapmPanelCard extends HTMLElement {
                 inputmode="decimal" min="0.01" step="0.01">
             </div>
             <div>
-              <label class="hapm-label">Recurrence</label>
-              <select class="hapm-select" id="e-recur">
-                <option value="manual">Manual</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="monthly">Monthly</option>
-              </select>
+              <label class="hapm-label">Occurrences</label>
+              <input class="hapm-input" id="e-occ" type="number" inputmode="numeric" min="1">
             </div>
           </div>
-          <label class="hapm-label">Occurrences needed</label>
-          <input class="hapm-input" id="e-occ" type="number" inputmode="numeric" min="1">
           <div class="hapm-multi-row" id="e-paymode-row">
             <label class="hapm-label">Pay Mode</label>
             <select class="hapm-select" id="e-paymode">
@@ -683,7 +723,7 @@ class HapmPanelCard extends HTMLElement {
     return `<div class="chore-card paused-card">
       <div>
         <div class="chore-top">
-          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
+          <div class="chore-icon">${choreIcon(c)}</div>
           <div>
             <div class="chore-name">${esc(c.name)}</div>
             ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
@@ -719,7 +759,7 @@ class HapmPanelCard extends HTMLElement {
     return `<div class="chore-card${isOpt ? ' optimistic' : ''}">
       <div>
         <div class="chore-top">
-          <div class="chore-icon">${CHORE_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % CHORE_ICONS.length]}</div>
+          <div class="chore-icon">${choreIcon(c)}</div>
           <div>
             <div class="chore-name">${esc(c.name)}${isOpt ? ' <span style="font-size:10px;opacity:0.5">(saving\u2026)</span>' : ''}</div>
             ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
@@ -779,31 +819,29 @@ class HapmPanelCard extends HTMLElement {
       sr.getElementById('m-paymode-row')?.classList.toggle('visible', occ > 1);
     });
 
-    // When any checkbox in the children list changes, re-evaluate multi sections
     sr.getElementById('m-children')?.addEventListener('change', () => {
       this._refreshAddMultiSections();
       syncOptionGroup(sr.getElementById('m-assign-group'));
       syncOptionGroup(sr.getElementById('m-split-group'));
     });
 
-    // When assignment-mode radio changes, toggle split row
     sr.getElementById('m-assign-group')?.addEventListener('change', () => {
       this._refreshAddMultiSections();
       syncOptionGroup(sr.getElementById('m-assign-group'));
     });
 
-    // Highlight selected split option
     sr.getElementById('m-split-group')?.addEventListener('change', () => {
       syncOptionGroup(sr.getElementById('m-split-group'));
     });
 
     sr.getElementById('m-add-submit')?.addEventListener('click', () => {
-      const name    = sr.getElementById('m-name').value.trim();
-      const desc    = sr.getElementById('m-desc').value.trim();
-      const value   = parseFloat(sr.getElementById('m-value').value);
-      const recur   = sr.getElementById('m-recur').value || 'manual';
-      const occ     = parseInt(sr.getElementById('m-occ').value) || 1;
-      const payMode = occ > 1 ? (sr.getElementById('m-paymode').value || 'per_occurrence') : 'per_occurrence';
+      const name     = sr.getElementById('m-name').value.trim();
+      const desc     = sr.getElementById('m-desc').value.trim();
+      const value    = parseFloat(sr.getElementById('m-value').value);
+      const recur    = sr.getElementById('m-recur').value || 'manual';
+      const occ      = parseInt(sr.getElementById('m-occ').value) || 1;
+      const category = sr.getElementById('m-category').value || DEFAULT_CATEGORY;
+      const payMode  = occ > 1 ? (sr.getElementById('m-paymode').value || 'per_occurrence') : 'per_occurrence';
       const assigned = [...sr.querySelectorAll('#m-children input[type=checkbox]:checked')]
         .map(cb => cb.value);
       if (!name || !value || !assigned.length) {
@@ -811,9 +849,9 @@ class HapmPanelCard extends HTMLElement {
         return;
       }
 
-      const isMultiChild   = assigned.length > 1;
-      const assignMode     = isMultiChild ? this._getAddAssignMode() : 'individual';
-      const splitMode      = (isMultiChild && assignMode === 'team') ? this._getAddSplitMode() : 'full';
+      const isMultiChild = assigned.length > 1;
+      const assignMode   = isMultiChild ? this._getAddAssignMode() : 'individual';
+      const splitMode    = (isMultiChild && assignMode === 'team') ? this._getAddSplitMode() : 'full';
 
       this._closeModal('modal-add');
 
@@ -823,7 +861,7 @@ class HapmPanelCard extends HTMLElement {
         this._optimisticChores[childId].push({
           id: '_opt_' + Date.now(), name, description: desc || null, value,
           recurrence: recur, occurrences_required: occ, occurrences_completed: 0,
-          assignment_mode: assignMode, pay_split_mode: splitMode,
+          category, assignment_mode: assignMode, pay_split_mode: splitMode,
           _optimistic: true, _expiresAt: expiresAt,
         });
       });
@@ -832,10 +870,8 @@ class HapmPanelCard extends HTMLElement {
 
       this._callService('add_chore', {
         name, value, recurrence: recur, occurrences_required: occ,
-        pay_mode: payMode,
-        assignment_mode: assignMode,
-        pay_split_mode: splitMode,
-        assigned_to: assigned,
+        pay_mode: payMode, assignment_mode: assignMode, pay_split_mode: splitMode,
+        category, assigned_to: assigned,
         ...(desc ? { description: desc } : {}),
       });
     });
@@ -847,14 +883,15 @@ class HapmPanelCard extends HTMLElement {
       sr.getElementById('e-paymode-row')?.classList.toggle('visible', occ > 1);
     });
     sr.getElementById('m-edit-submit')?.addEventListener('click', () => {
-      const modal   = sr.getElementById('modal-edit');
-      const choreId = modal.dataset.choreId;
-      const name    = sr.getElementById('e-name').value.trim();
-      const desc    = sr.getElementById('e-desc').value.trim();
-      const value   = parseFloat(sr.getElementById('e-value').value);
-      const recur   = sr.getElementById('e-recur').value || 'manual';
-      const occ     = parseInt(sr.getElementById('e-occ').value) || 1;
-      const payMode = occ > 1 ? (sr.getElementById('e-paymode').value || 'per_occurrence') : 'per_occurrence';
+      const modal    = sr.getElementById('modal-edit');
+      const choreId  = modal.dataset.choreId;
+      const name     = sr.getElementById('e-name').value.trim();
+      const desc     = sr.getElementById('e-desc').value.trim();
+      const value    = parseFloat(sr.getElementById('e-value').value);
+      const recur    = sr.getElementById('e-recur').value || 'manual';
+      const occ      = parseInt(sr.getElementById('e-occ').value) || 1;
+      const category = sr.getElementById('e-category').value || DEFAULT_CATEGORY;
+      const payMode  = occ > 1 ? (sr.getElementById('e-paymode').value || 'per_occurrence') : 'per_occurrence';
       if (!name || !value) {
         if (!name) sr.getElementById('e-name').focus();
         return;
@@ -863,7 +900,7 @@ class HapmPanelCard extends HTMLElement {
       this._callService('update_chore', {
         chore_id: choreId, name, value, recurrence: recur,
         occurrences_required: occ, pay_mode: payMode,
-        description: desc || null,
+        category, description: desc || null,
       });
     });
 
@@ -913,6 +950,7 @@ class HapmPanelCard extends HTMLElement {
         break;
 
       case 'open-add-form': {
+        sr.getElementById('m-category').innerHTML = categoryOptionsHTML(DEFAULT_CATEGORY);
         sr.getElementById('m-name').value    = '';
         sr.getElementById('m-desc').value    = '';
         sr.getElementById('m-value').value   = '';
@@ -920,12 +958,10 @@ class HapmPanelCard extends HTMLElement {
         sr.getElementById('m-occ').value     = '1';
         sr.getElementById('m-paymode').value = 'per_occurrence';
         sr.getElementById('m-paymode-row')?.classList.remove('visible');
-        // Reset assignment/split to defaults
         const indRadio = sr.querySelector('#m-assign-group input[value=individual]');
         if (indRadio) { indRadio.checked = true; syncOptionGroup(sr.getElementById('m-assign-group')); }
         const fullRadio = sr.querySelector('#m-split-group input[value=full]');
         if (fullRadio) { fullRadio.checked = true; syncOptionGroup(sr.getElementById('m-split-group')); }
-        // Hide multi-child sections until 2+ checked
         sr.getElementById('m-assign-row')?.classList.remove('visible');
         sr.getElementById('m-split-row')?.classList.remove('visible');
         sr.getElementById('m-children').innerHTML = this._children.map(c => `
@@ -935,7 +971,6 @@ class HapmPanelCard extends HTMLElement {
             <span class="hapm-cdot" style="background:${COLOUR_MAP[c.colour]||COLOUR_MAP.teal}"></span>
             <span class="cname">${esc(c.childName)}</span>
           </label>`).join('');
-        // Re-bind change listener to freshly injected checkboxes
         sr.getElementById('m-children')?.addEventListener('change', () => {
           this._refreshAddMultiSections();
           syncOptionGroup(sr.getElementById('m-assign-group'));
@@ -951,6 +986,7 @@ class HapmPanelCard extends HTMLElement {
         try { chore = JSON.parse(el.dataset.choreJson); } catch { break; }
         const modal = sr.getElementById('modal-edit');
         modal.dataset.choreId = chore.id;
+        sr.getElementById('e-category').innerHTML = categoryOptionsHTML(chore.category || DEFAULT_CATEGORY);
         sr.getElementById('e-name').value    = chore.name  || '';
         sr.getElementById('e-desc').value    = getDesc(chore);
         sr.getElementById('e-value').value   = chore.value || '';
