@@ -1,19 +1,20 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.21
+ * HAPM Pocket Money Panel Card  v0.1.22
  *
- * Changes vs 0.1.20:
- *   Chore icon is now driven by a selectable Category rather than a random
- *   hash of the chore name.
- *
- *   - CHORE_CATEGORIES: 16 categories, each with an emoji + label.
- *   - Add Chore form: new "Category" dropdown before the name field.
- *   - Edit Chore form: same dropdown, pre-filled from chore.category.
- *   - Chore cards (due + paused): icon = CHORE_CATEGORIES[category].emoji,
- *     falling back to the old hash lookup for legacy chores without a category.
- *   - category forwarded in add_chore and update_chore service calls.
+ * Changes vs 0.1.21:
+ *   - sensor.py now exposes a 'ledger' attribute on the balance sensor
+ *     containing the 50 most-recent events (newest first).
+ *   - Ledger tab is now a real transaction list showing:
+ *       • Event type icon + label (chore earned / payment made / occurrence logged)
+ *       • Chore name / note
+ *       • Amount (green = earned, red = payment)
+ *       • Human-readable timestamp
+ *       • Running balance column
+ *   - category + assignment_mode + pay_split_mode now forwarded from sensor
+ *     for both due_chores and paused_chores (so icons always correct).
  */
 
-const HAPM_VERSION = '0.1.21';
+const HAPM_VERSION = '0.1.22';
 const CURRENCY_DEFAULT = '\u00a3';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -23,42 +24,58 @@ const COLOUR_MAP = {
   red: '#db4437', pink: '#e8619a', grey: '#9e9e9e',
 };
 
-// ─── Chore categories ────────────────────────────────────────────────────────
 const CHORE_CATEGORIES = {
-  bedroom:    { emoji: '\ud83d\udecf\ufe0f', label: 'Bedroom' },
-  kitchen:    { emoji: '\ud83c\udf7d\ufe0f', label: 'Kitchen' },
-  bathroom:   { emoji: '\ud83d\udebf',       label: 'Bathroom' },
-  tidying:    { emoji: '\ud83e\uddf9',       label: 'Tidying' },
-  laundry:    { emoji: '\ud83e\uddfa',       label: 'Laundry' },
-  garden:     { emoji: '\ud83c\udf3f',       label: 'Garden' },
-  pet:        { emoji: '\ud83d\udc3e',       label: 'Pet Care' },
-  homework:   { emoji: '\ud83d\udcda',       label: 'Homework' },
-  recycling:  { emoji: '\ud83d\uddd1\ufe0f', label: 'Recycling' },
-  cooking:    { emoji: '\ud83d\udc68\u200d\ud83c\udf73', label: 'Cooking' },
-  shopping:   { emoji: '\ud83d\udecd\ufe0f', label: 'Shopping' },
-  exercise:   { emoji: '\ud83c\udfcb\ufe0f', label: 'Exercise' },
-  reading:    { emoji: '\ud83d\udcd6',       label: 'Reading' },
-  car:        { emoji: '\ud83d\ude97',       label: 'Car' },
-  tech:       { emoji: '\ud83d\udcbb',       label: 'Tech / Screens' },
-  other:      { emoji: '\u2b50',             label: 'Other' },
+  bedroom:   { emoji: '\ud83d\udecf\ufe0f', label: 'Bedroom' },
+  kitchen:   { emoji: '\ud83c\udf7d\ufe0f', label: 'Kitchen' },
+  bathroom:  { emoji: '\ud83d\udebf',       label: 'Bathroom' },
+  tidying:   { emoji: '\ud83e\uddf9',       label: 'Tidying' },
+  laundry:   { emoji: '\ud83e\uddfa',       label: 'Laundry' },
+  garden:    { emoji: '\ud83c\udf3f',       label: 'Garden' },
+  pet:       { emoji: '\ud83d\udc3e',       label: 'Pet Care' },
+  homework:  { emoji: '\ud83d\udcda',       label: 'Homework' },
+  recycling: { emoji: '\ud83d\uddd1\ufe0f', label: 'Recycling' },
+  cooking:   { emoji: '\ud83d\udc68\u200d\ud83c\udf73', label: 'Cooking' },
+  shopping:  { emoji: '\ud83d\udecd\ufe0f', label: 'Shopping' },
+  exercise:  { emoji: '\ud83c\udfcb\ufe0f', label: 'Exercise' },
+  reading:   { emoji: '\ud83d\udcd6',       label: 'Reading' },
+  car:       { emoji: '\ud83d\ude97',       label: 'Car' },
+  tech:      { emoji: '\ud83d\udcbb',       label: 'Tech / Screens' },
+  other:     { emoji: '\u2b50',             label: 'Other' },
 };
 const CATEGORY_KEYS = Object.keys(CHORE_CATEGORIES);
 const DEFAULT_CATEGORY = 'tidying';
 
-// Legacy fallback (for chores saved before v0.1.21 without a category)
 const LEGACY_ICONS = ['\ud83e\uddf9','\ud83d\udecf\ufe0f','\ud83c\udf7d\ufe0f','\ud83d\udc36','\ud83c\udf3f','\ud83e\uddfa','\ud83d\udebf','\ud83d\udcda','\ud83d\uddd1\ufe0f','\ud83e\uddfd'];
 function choreIcon(c) {
   if (c.category && CHORE_CATEGORIES[c.category]) return CHORE_CATEGORIES[c.category].emoji;
   return LEGACY_ICONS[Math.abs((c.id||c.name||'').charCodeAt(0)||0) % LEGACY_ICONS.length];
 }
 
+// Ledger event-type metadata
+const LEDGER_META = {
+  chore_completed:    { icon: '\u2705', label: 'Chore completed',    colour: '#6daa45' },
+  occurrence_logged:  { icon: '\ud83d\udfe3', label: 'Occurrence logged', colour: '#7c63d1' },
+  payment_made:       { icon: '\ud83d\udcb8', label: 'Paid out',          colour: '#db4437' },
+};
+function ledgerMeta(event_type) {
+  return LEDGER_META[event_type] || { icon: '\u2b50', label: event_type, colour: '#9e9e9e' };
+}
+
 function fmtMoney(v, sym = CURRENCY_DEFAULT) { return sym + Math.abs(v).toFixed(2); }
+function fmtMoneyRaw(v, sym = CURRENCY_DEFAULT) {
+  const sign = v >= 0 ? '+' : '-';
+  return sign + sym + Math.abs(v).toFixed(2);
+}
 function fmtDate(iso) {
   const d = new Date(iso), now = new Date(), diff = now - d;
   if (diff < 60000) return 'Just now';
   if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
   if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  if (diff < 604800000) {
+    return d.toLocaleDateString('en-GB', { weekday: 'short' }) + ' ' +
+           d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 function esc(s) {
   return String(s)
@@ -79,7 +96,6 @@ function fmtPausedUntil(isoUntil) {
 }
 function getDesc(c) { return (c.description && c.description.trim()) ? c.description.trim() : ''; }
 
-// ─── Category <option> HTML ───────────────────────────────────────────────────
 function categoryOptionsHTML(selected = DEFAULT_CATEGORY) {
   return CATEGORY_KEYS.map(k => {
     const { emoji, label } = CHORE_CATEGORIES[k];
@@ -177,6 +193,28 @@ const STYLES = `
     background:var(--success-color,#6daa45); color:#fff; border:none;
     border-radius:10px; font-family:inherit; font-weight:700; cursor:pointer; }
 
+  /* ── Ledger ── */
+  .ledger-header { display:flex; justify-content:space-between; align-items:baseline;
+    margin-bottom:12px; }
+  .ledger-balance { font-size:13px; color:var(--secondary-text-color); }
+  .ledger-balance strong { font-size:16px; color:var(--success-color,#6daa45);
+    font-variant-numeric:tabular-nums; }
+  .ledger-row { display:grid;
+    grid-template-columns:32px 1fr auto auto;
+    gap:0 10px; align-items:center;
+    padding:10px 0; border-bottom:1px solid var(--divider-color); }
+  .ledger-row:last-child { border-bottom:none; }
+  .ledger-icon { font-size:18px; text-align:center; }
+  .ledger-label { font-size:13px; font-weight:600; line-height:1.3; }
+  .ledger-note  { font-size:11px; color:var(--secondary-text-color); margin-top:1px; }
+  .ledger-time  { font-size:11px; color:var(--secondary-text-color); text-align:right; white-space:nowrap; }
+  .ledger-amount { font-size:13px; font-weight:700; font-variant-numeric:tabular-nums;
+    white-space:nowrap; text-align:right; }
+  .ledger-amount.earn { color:var(--success-color,#6daa45); }
+  .ledger-amount.pay  { color:#db4437; }
+  .ledger-running { font-size:11px; color:var(--secondary-text-color);
+    font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+
   .empty { text-align:center; padding:32px 16px;
     color:var(--secondary-text-color); font-size:13px; }
   .empty-icon { font-size:32px; margin-bottom:8px; }
@@ -223,7 +261,6 @@ const STYLES = `
     color:var(--primary-text-color); }
   .hapm-btn-ok { background:#01696f; color:#fff; }
 
-  /* conditional rows */
   .hapm-multi-row  { display:none; margin-bottom:12px; }
   .hapm-multi-row.visible  { display:block; }
   .hapm-assign-row { display:none; margin-bottom:12px; }
@@ -231,7 +268,6 @@ const STYLES = `
   .hapm-split-row  { display:none; margin-bottom:12px; }
   .hapm-split-row.visible  { display:block; }
 
-  /* segmented option buttons */
   .hapm-option-group { display:grid; gap:8px; margin-bottom:12px; }
   .hapm-option { display:flex; align-items:flex-start; gap:12px; padding:12px 14px;
     border-radius:10px; border:1.5px solid var(--divider-color,#555);
@@ -316,6 +352,7 @@ class HapmPanelCard extends HTMLElement {
       const serverChores = dueSensor?.attributes?.due_chores || [];
       const pausedChores = dueSensor?.attributes?.paused_chores || [];
       const lastPaid     = attrs.last_paid || null;
+      const ledger       = attrs.ledger || [];
       const optimistic   = this._optimisticChores[childEntryId] || [];
 
       const paidExpiry = this._optimisticPaid.get(childEntryId);
@@ -326,7 +363,7 @@ class HapmPanelCard extends HTMLElement {
 
       children.push({ childEntryId, childName, colour, currency, balance,
                        dueChores: [...serverChores, ...optimistic],
-                       pausedChores, lastPaid });
+                       pausedChores, lastPaid, ledger });
     }
 
     if (children.length) {
@@ -672,15 +709,49 @@ class HapmPanelCard extends HTMLElement {
       panel.querySelectorAll('[data-action]').forEach(el =>
         el.addEventListener('click', e => this._handleAction(e)));
     } else {
-      panel.innerHTML = `
-        <div style="margin-bottom:10px"><strong style="font-size:13px">Payment Ledger</strong></div>
-        <div class="empty" style="padding:16px"><div class="empty-icon">\ud83d\udcd2</div>
-          Full ledger in sensor attribute:<br><br>
-          <code style="font-size:11px;background:var(--secondary-background-color);padding:4px 8px;border-radius:6px">
-            sensor.&lt;child&gt;_pocket_money_balance \u2192 ledger
-          </code>
-        </div>`;
+      panel.innerHTML = this._ledgerPanelHTML(child);
     }
+  }
+
+  _ledgerPanelHTML(child) {
+    if (!child) return `<div class="empty"><div class="empty-icon">\ud83d\udc76</div>No children configured.</div>`;
+    const entries = child.ledger || [];
+    if (!entries.length) {
+      return `<div class="empty"><div class="empty-icon">\ud83d\udcd2</div>No transactions yet.<br>Complete a chore to get started!</div>`;
+    }
+
+    // Compute running balance from newest to oldest.
+    // entries are newest-first, running balance shown is the balance AFTER that event.
+    // We compute by summing amounts from oldest to newest then reverse.
+    const reversed = [...entries].reverse(); // oldest first
+    let running = 0;
+    const runningBalances = reversed.map(e => { running += e.amount; return running; });
+    runningBalances.reverse(); // now newest-first, matching entries order
+
+    const rows = entries.map((e, i) => {
+      const meta    = ledgerMeta(e.event_type);
+      const isEarn  = e.amount > 0;
+      const amtStr  = fmtMoneyRaw(e.amount, child.currency);
+      const runStr  = fmtMoney(runningBalances[i], child.currency);
+      const noteStr = e.note ? esc(e.note) : esc(meta.label);
+      return `<div class="ledger-row">
+        <div class="ledger-icon">${meta.icon}</div>
+        <div>
+          <div class="ledger-label">${noteStr}</div>
+          <div class="ledger-time">${fmtDate(e.timestamp)}</div>
+        </div>
+        <div class="ledger-amount ${isEarn ? 'earn' : 'pay'}">${amtStr}</div>
+        <div class="ledger-running">${runStr}</div>
+      </div>`;
+    }).join('');
+
+    return `
+      <div class="ledger-header">
+        <strong style="font-size:13px">Transaction History</strong>
+        <div class="ledger-balance">Balance: <strong>${fmtMoney(child.balance, child.currency)}</strong></div>
+      </div>
+      ${rows}
+      ${entries.length >= 50 ? `<div style="text-align:center;padding:12px 0;font-size:12px;color:var(--secondary-text-color)">Showing most recent 50 transactions</div>` : ''}`;
   }
 
   _choresPanelHTML(child) {
@@ -811,7 +882,6 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
-    // ── Add form ──
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
 
     sr.getElementById('m-occ')?.addEventListener('input', () => {
@@ -876,7 +946,6 @@ class HapmPanelCard extends HTMLElement {
       });
     });
 
-    // ── Edit form ──
     sr.getElementById('m-edit-cancel')?.addEventListener('click', () => this._closeModal('modal-edit'));
     sr.getElementById('e-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('e-occ').value) || 1;

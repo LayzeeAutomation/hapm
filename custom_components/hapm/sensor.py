@@ -24,6 +24,7 @@ from .store import HAPMStore
 _LOGGER = logging.getLogger(__name__)
 
 SENSOR_UPDATE_INTERVAL = timedelta(minutes=1)
+LEDGER_MAX_ENTRIES = 50  # most-recent entries exposed to the card
 
 
 async def async_setup_entry(
@@ -103,18 +104,29 @@ class HAPMBalanceSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        ledger = self._store.get_ledger_for_child(self._child_entry_id)
+        all_entries = self._store.get_ledger_for_child(self._child_entry_id)
         last_payment = next(
-            (e for e in reversed(ledger) if e.event_type == "payment_made"),
+            (e for e in reversed(all_entries) if e.event_type == "payment_made"),
             None,
         )
+        # Expose the most-recent N entries newest-first for the card ledger view
+        recent = list(reversed(all_entries[-LEDGER_MAX_ENTRIES:]))
         return {
             "entry_id": self._child_entry_id,
             "child_name": self._child_name,
             "avatar_colour": self._colour,
             "currency": self._currency,
-            "ledger_event_count": len(ledger),
+            "ledger_event_count": len(all_entries),
             "last_paid": last_payment.timestamp.isoformat() if last_payment else None,
+            "ledger": [
+                {
+                    "event_type": e.event_type,
+                    "amount": round(e.amount, 2),
+                    "timestamp": e.timestamp.isoformat(),
+                    "note": e.note or "",
+                }
+                for e in recent
+            ],
         }
 
 
@@ -181,7 +193,6 @@ class HAPMChoresDueSensor(SensorEntity):
         return due
 
     def _get_paused_chores(self) -> list:
-        """Return all chores assigned to this child that are currently paused."""
         paused = []
         for chore in self._store.get_chores():
             if self._child_entry_id not in chore.assigned_to:
@@ -219,6 +230,9 @@ class HAPMChoresDueSensor(SensorEntity):
                     ),
                     "description": c.description,
                     "pay_mode": c.pay_mode,
+                    "assignment_mode": getattr(c, "assignment_mode", "individual"),
+                    "pay_split_mode": getattr(c, "pay_split_mode", "full"),
+                    "category": getattr(c, "category", None),
                 }
                 for c in due_chores
             ],
@@ -236,6 +250,9 @@ class HAPMChoresDueSensor(SensorEntity):
                     ),
                     "description": c.description,
                     "pay_mode": c.pay_mode,
+                    "assignment_mode": getattr(c, "assignment_mode", "individual"),
+                    "pay_split_mode": getattr(c, "pay_split_mode", "full"),
+                    "category": getattr(c, "category", None),
                     "paused_until": c.paused_until.isoformat() if c.paused_until else None,
                 }
                 for c in paused_chores
