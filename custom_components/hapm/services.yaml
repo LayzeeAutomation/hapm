@@ -68,17 +68,6 @@ add_chore:
           max: 30
           step: 1
           mode: box
-    occurrence_window_days:
-      name: Occurrence Window (days)
-      description: Number of days within which all occurrences must be completed. Required if occurrences_required > 1.
-      required: false
-      example: 7
-      selector:
-        number:
-          min: 1
-          max: 365
-          step: 1
-          mode: box
     pay_mode:
       name: Pay Mode
       description: "per_occurrence credits each completion immediately. on_completion only credits when all occurrences are done."
@@ -161,15 +150,15 @@ update_chore:
           max: 30
           step: 1
           mode: box
-    occurrence_window_days:
-      name: Occurrence Window (days)
+    pay_mode:
+      name: Pay Mode
+      description: "per_occurrence credits each completion immediately. on_completion only credits when all occurrences are done."
       required: false
       selector:
-        number:
-          min: 1
-          max: 365
-          step: 1
-          mode: box
+        select:
+          options:
+            - per_occurrence
+            - on_completion
 
 complete_chore:
   name: Complete Chore
