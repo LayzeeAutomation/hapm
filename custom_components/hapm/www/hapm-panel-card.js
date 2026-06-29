@@ -1,17 +1,16 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.16
+ * HAPM Pocket Money Panel Card  v0.1.17
  *
- * Changes vs 0.1.15:
- *   1. Edit button (✏️) on every chore card — opens a pre-filled sheet.
- *   2. Edit modal lets you change name, description, value, recurrence
- *      and occurrences required, then calls the new update_chore service.
- *   3. Edit button also appears on paused chore cards.
- *   4. manifest.json bumped to 0.1.16.
- *   Fix included from hotfix: resume_chore resets next_due so chore
- *   reappears immediately in the Chores tab.
+ * Changes vs 0.1.16:
+ *   1. Removed "Completion window (days)" field from Add and Edit modals.
+ *      The window is now auto-derived from recurrence in services.py:
+ *      daily=1d, weekly=7d, monthly=30d, manual=occurrences*7d.
+ *   2. When occurrences > 1, a "Pay mode" selector appears:
+ *      - "Per occurrence" — equal share of total value credited each time
+ *      - "All at once" — full value credited only when all occurrences done
  */
 
-const HAPM_VERSION = '0.1.16';
+const HAPM_VERSION = '0.1.17';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -181,8 +180,9 @@ const STYLES = `
   .hapm-btn-cancel { background:var(--secondary-background-color,#3a3a3c);
     color:var(--primary-text-color); }
   .hapm-btn-ok { background:#01696f; color:#fff; }
-  .hapm-window-row { display:none; margin-bottom:12px; }
-  .hapm-window-row.visible { display:block; }
+  /* pay-mode row — hidden until occ > 1 */
+  .hapm-paymode-row { display:none; margin-bottom:12px; }
+  .hapm-paymode-row.visible { display:block; }
   .hapm-confirm-msg { font-size:15px; line-height:1.5; margin-bottom:20px;
     text-align:center; color:var(--primary-text-color); }
 `;
@@ -352,9 +352,12 @@ class HapmPanelCard extends HTMLElement {
           </div>
           <label class="hapm-label">Occurrences needed</label>
           <input class="hapm-input" id="m-occ" type="number" inputmode="numeric" min="1" value="1">
-          <div class="hapm-window-row" id="m-window-row">
-            <label class="hapm-label">Completion window (days)</label>
-            <input class="hapm-input" id="m-window" type="number" inputmode="numeric" min="1" placeholder="e.g. 7">
+          <div class="hapm-paymode-row" id="m-paymode-row">
+            <label class="hapm-label">Pay Mode</label>
+            <select class="hapm-select" id="m-paymode">
+              <option value="per_occurrence">Per occurrence — equal share each time</option>
+              <option value="on_completion">All at once — full value when all done</option>
+            </select>
           </div>
           <label class="hapm-label">Assign To</label>
           <div class="hapm-children-list" id="m-children"></div>
@@ -394,9 +397,12 @@ class HapmPanelCard extends HTMLElement {
           </div>
           <label class="hapm-label">Occurrences needed</label>
           <input class="hapm-input" id="e-occ" type="number" inputmode="numeric" min="1">
-          <div class="hapm-window-row" id="e-window-row">
-            <label class="hapm-label">Completion window (days)</label>
-            <input class="hapm-input" id="e-window" type="number" inputmode="numeric" min="1">
+          <div class="hapm-paymode-row" id="e-paymode-row">
+            <label class="hapm-label">Pay Mode</label>
+            <select class="hapm-select" id="e-paymode">
+              <option value="per_occurrence">Per occurrence — equal share each time</option>
+              <option value="on_completion">All at once — full value when all done</option>
+            </select>
           </div>
           <div class="hapm-actions">
             <button class="hapm-btn hapm-btn-cancel" id="m-edit-cancel">Cancel</button>
@@ -561,7 +567,6 @@ class HapmPanelCard extends HTMLElement {
 
   _pausedCardHTML(c, child) {
     const label = fmtPausedUntil(c.paused_until);
-    // Encode the full chore object for the edit modal
     const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card paused-card">
       <div>
@@ -647,15 +652,14 @@ class HapmPanelCard extends HTMLElement {
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value) || 1;
-      sr.getElementById('m-window-row').classList.toggle('visible', occ > 1);
-      if (occ > 1) sr.getElementById('m-window').value = occ * 7;
+      sr.getElementById('m-paymode-row').classList.toggle('visible', occ > 1);
     });
     sr.getElementById('m-add-submit')?.addEventListener('click', () => {
       const name    = sr.getElementById('m-name').value.trim();
       const value   = parseFloat(sr.getElementById('m-value').value);
       const recur   = sr.getElementById('m-recur').value || 'manual';
       const occ     = parseInt(sr.getElementById('m-occ').value) || 1;
-      const winDays = occ > 1 ? (parseInt(sr.getElementById('m-window').value) || occ * 7) : null;
+      const payMode = occ > 1 ? (sr.getElementById('m-paymode').value || 'per_occurrence') : 'per_occurrence';
       const assigned = [...sr.querySelectorAll('#m-children input[type=checkbox]:checked')]
         .map(cb => cb.value);
       if (!name || !value || !assigned.length) {
@@ -673,18 +677,18 @@ class HapmPanelCard extends HTMLElement {
       });
       this._syncFromHass();
       this._updateDOM();
-      const svcData = { name, value, recurrence: recur, occurrences_required: occ,
+      this._callService('add_chore', {
+        name, value, recurrence: recur, occurrences_required: occ, pay_mode: payMode,
         assignment_mode: assigned.length === this._children.length ? 'team' : 'individual',
-        assigned_to: assigned };
-      if (winDays) svcData.occurrence_window_days = winDays;
-      this._callService('add_chore', svcData);
+        assigned_to: assigned,
+      });
     });
 
     // ── Edit chore modal
     sr.getElementById('m-edit-cancel')?.addEventListener('click', () => this._closeModal('modal-edit'));
     sr.getElementById('e-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('e-occ').value) || 1;
-      sr.getElementById('e-window-row').classList.toggle('visible', occ > 1);
+      sr.getElementById('e-paymode-row').classList.toggle('visible', occ > 1);
     });
     sr.getElementById('m-edit-submit')?.addEventListener('click', () => {
       const modal   = sr.getElementById('modal-edit');
@@ -694,16 +698,16 @@ class HapmPanelCard extends HTMLElement {
       const value   = parseFloat(sr.getElementById('e-value').value);
       const recur   = sr.getElementById('e-recur').value || 'manual';
       const occ     = parseInt(sr.getElementById('e-occ').value) || 1;
-      const winDays = occ > 1 ? (parseInt(sr.getElementById('e-window').value) || null) : null;
+      const payMode = occ > 1 ? (sr.getElementById('e-paymode').value || 'per_occurrence') : 'per_occurrence';
       if (!name || !value) {
         if (!name) sr.getElementById('e-name').focus();
         return;
       }
       this._closeModal('modal-edit');
-      const svcData = { chore_id: choreId, name, value, recurrence: recur,
-        occurrences_required: occ, description: desc || null };
-      if (winDays) svcData.occurrence_window_days = winDays;
-      this._callService('update_chore', svcData);
+      this._callService('update_chore', {
+        chore_id: choreId, name, value, recurrence: recur,
+        occurrences_required: occ, pay_mode: payMode, description: desc || null,
+      });
     });
 
     // ── Holiday modal
@@ -756,12 +760,13 @@ class HapmPanelCard extends HTMLElement {
         break;
 
       case 'open-add-form': {
-        sr.getElementById('m-name').value  = '';
-        sr.getElementById('m-desc').value  = '';
-        sr.getElementById('m-value').value = '';
-        sr.getElementById('m-recur').value = 'weekly';
-        sr.getElementById('m-occ').value   = '1';
-        sr.getElementById('m-window-row').classList.remove('visible');
+        sr.getElementById('m-name').value    = '';
+        sr.getElementById('m-desc').value    = '';
+        sr.getElementById('m-value').value   = '';
+        sr.getElementById('m-recur').value   = 'weekly';
+        sr.getElementById('m-occ').value     = '1';
+        sr.getElementById('m-paymode').value = 'per_occurrence';
+        sr.getElementById('m-paymode-row').classList.remove('visible');
         sr.getElementById('m-children').innerHTML = this._children.map(c => `
           <label class="hapm-child-row">
             <input type="checkbox" value="${esc(c.childEntryId)}"
@@ -779,15 +784,14 @@ class HapmPanelCard extends HTMLElement {
         try { chore = JSON.parse(el.dataset.choreJson); } catch { break; }
         const modal = sr.getElementById('modal-edit');
         modal.dataset.choreId = chore.id;
-        sr.getElementById('e-name').value  = chore.name  || '';
-        sr.getElementById('e-desc').value  = chore.description || '';
-        sr.getElementById('e-value').value = chore.value || '';
-        sr.getElementById('e-recur').value = chore.recurrence || 'manual';
+        sr.getElementById('e-name').value    = chore.name  || '';
+        sr.getElementById('e-desc').value    = chore.description || '';
+        sr.getElementById('e-value').value   = chore.value || '';
+        sr.getElementById('e-recur').value   = chore.recurrence || 'manual';
         const occ = chore.occurrences_required || 1;
-        sr.getElementById('e-occ').value   = occ;
-        const winRow = sr.getElementById('e-window-row');
-        winRow.classList.toggle('visible', occ > 1);
-        sr.getElementById('e-window').value = chore.occurrence_window_days || (occ > 1 ? occ * 7 : '');
+        sr.getElementById('e-occ').value     = occ;
+        sr.getElementById('e-paymode').value = chore.pay_mode || 'per_occurrence';
+        sr.getElementById('e-paymode-row').classList.toggle('visible', occ > 1);
         this._openModal('modal-edit');
         setTimeout(() => sr.getElementById('e-name')?.focus(), 80);
         break;
