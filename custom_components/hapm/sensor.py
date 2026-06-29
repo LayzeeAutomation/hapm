@@ -212,7 +212,13 @@ class HAPMChoresDueSensor(SensorEntity):
                     "recurrence": c.recurrence,
                     "next_due": c.next_due.isoformat() if c.next_due else None,
                     "occurrences_required": c.occurrences_required,
+                    "occurrences_completed": (
+                        self._store.get_open_window(c.id).total_completed
+                        if c.occurrences_required > 1 and self._store.get_open_window(c.id)
+                        else 0
+                    ),
                     "description": c.description,
+                    "pay_mode": c.pay_mode,
                 }
                 for c in due_chores
             ],
@@ -223,8 +229,13 @@ class HAPMChoresDueSensor(SensorEntity):
                     "value": c.value,
                     "recurrence": c.recurrence,
                     "occurrences_required": c.occurrences_required,
+                    "occurrences_completed": (
+                        self._store.get_open_window(c.id).total_completed
+                        if c.occurrences_required > 1 and self._store.get_open_window(c.id)
+                        else 0
+                    ),
                     "description": c.description,
-                    # ISO string so the card can parse it; year-9999 = indefinite
+                    "pay_mode": c.pay_mode,
                     "paused_until": c.paused_until.isoformat() if c.paused_until else None,
                 }
                 for c in paused_chores

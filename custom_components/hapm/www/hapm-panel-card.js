@@ -1,15 +1,16 @@
 /**
- * HAPM Pocket Money Panel Card  v0.1.18
+ * HAPM Pocket Money Panel Card  v0.1.19
  *
- * Changes vs 0.1.17:
- *   1. Fix description not showing on due chore cards — guarded against
- *      null/undefined coming back from sensor attribute.
- *   2. Fix description not pre-filling in edit modal — same null guard,
- *      plus pay_mode and description now reliably round-trip via chore JSON.
- *   3. frontend.py + manifest bumped to 0.1.18 so HA auto-updates resource URL.
+ * Changes vs 0.1.18:
+ *   1. sensor.py now exposes occurrences_completed on each due/paused chore.
+ *   2. Occurrence progress dots now fill correctly — completed dots are solid
+ *      accent colour, remaining dots are hollow.
+ *   3. "Log occurrence" button now reads "Log 1/3", "Log 2/3" etc. showing
+ *      the next sequential occurrence number out of the total required.
+ *   4. pay_mode also forwarded through sensor so it round-trips correctly.
  */
 
-const HAPM_VERSION = '0.1.18';
+const HAPM_VERSION = '0.1.19';
 const CURRENCY_DEFAULT = '£';
 const OPTIMISTIC_TTL_MS = 15000;
 
@@ -45,7 +46,6 @@ function fmtPausedUntil(isoUntil) {
   const d = new Date(isoUntil);
   return 'Until ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
-// Safely get description string — sensor may return null/undefined/empty
 function getDesc(c) { return (c.description && c.description.trim()) ? c.description.trim() : ''; }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -115,9 +115,10 @@ const STYLES = `
   .pill-multi { background:rgba(124,99,209,0.15); color:#7c63d1; }
   .pill-recur { background:rgba(85,145,199,0.15); color:#5591c7; }
   .pill-paused{ background:rgba(201,146,10,0.15); color:#c9920a; }
-  .occ-track { display:flex; gap:4px; margin-top:6px; }
-  .occ-dot { width:9px; height:9px; border-radius:9999px;
-    background:var(--divider-color); border:1.5px solid var(--secondary-text-color); }
+  .occ-track { display:flex; gap:4px; margin-top:6px; align-items:center; }
+  .occ-dot { width:10px; height:10px; border-radius:9999px; flex-shrink:0;
+    border:1.5px solid #7c63d1; background:transparent; transition:background 200ms; }
+  .occ-dot.done { background:#7c63d1; border-color:#7c63d1; }
   .chore-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
   .chore-value { font-weight:700; font-size:15px; color:var(--success-color,#6daa45);
     font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -181,7 +182,6 @@ const STYLES = `
   .hapm-btn-cancel { background:var(--secondary-background-color,#3a3a3c);
     color:var(--primary-text-color); }
   .hapm-btn-ok { background:#01696f; color:#fff; }
-  /* pay-mode row — hidden until occ > 1 */
   .hapm-paymode-row { display:none; margin-bottom:12px; }
   .hapm-paymode-row.visible { display:block; }
   .hapm-confirm-msg { font-size:15px; line-height:1.5; margin-bottom:20px;
@@ -217,7 +217,6 @@ class HapmPanelCard extends HTMLElement {
     }
   }
 
-  // ── Data sync ─────────────────────────────────────────────────────────────
   _syncFromHass() {
     if (!this._hass) return;
     const now    = Date.now();
@@ -286,7 +285,6 @@ class HapmPanelCard extends HTMLElement {
     );
   }
 
-  // ── Build DOM ─────────────────────────────────────────────────────────────
   _buildDOM() {
     const sr = this.shadowRoot;
     sr.innerHTML = '';
@@ -462,7 +460,6 @@ class HapmPanelCard extends HTMLElement {
     this._updateDOM();
   }
 
-  // ── Update DOM ────────────────────────────────────────────────────────────
   _updateDOM() {
     const sr    = this.shadowRoot;
     const child = this._activeChild;
@@ -567,8 +564,11 @@ class HapmPanelCard extends HTMLElement {
   }
 
   _pausedCardHTML(c, child) {
-    const label = fmtPausedUntil(c.paused_until);
-    const desc  = getDesc(c);
+    const label    = fmtPausedUntil(c.paused_until);
+    const desc     = getDesc(c);
+    const done     = c.occurrences_completed || 0;
+    const total    = c.occurrences_required  || 1;
+    const isMulti  = total > 1;
     const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card paused-card">
       <div>
@@ -579,8 +579,11 @@ class HapmPanelCard extends HTMLElement {
             ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
             <div class="chore-meta">
               <span class="pill pill-paused">⏸ ${esc(label)}</span>
+              ${isMulti ? `<span class="pill pill-multi">${done}/${total}×</span>` : ''}
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
             </div>
+            ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i) =>
+              `<span class="occ-dot${i < done ? ' done' : ''}"></span>`).join('')}</div>` : ''}
           </div>
         </div>
         <div class="chore-actions">
@@ -593,9 +596,12 @@ class HapmPanelCard extends HTMLElement {
   }
 
   _choreCardHTML(c, child) {
-    const isMulti = c.occurrences_required > 1;
-    const isOpt   = !!c._optimistic;
+    const isMulti  = c.occurrences_required > 1;
+    const isOpt    = !!c._optimistic;
     const desc     = getDesc(c);
+    const done     = c.occurrences_completed || 0;
+    const total    = c.occurrences_required  || 1;
+    const nextOcc  = done + 1;
     const choreJson = esc(JSON.stringify(c));
     return `<div class="chore-card${isOpt ? ' optimistic' : ''}">
       <div>
@@ -606,15 +612,16 @@ class HapmPanelCard extends HTMLElement {
             ${desc ? `<div class="chore-desc">${esc(desc)}</div>` : ''}
             <div class="chore-meta">
               ${c.recurrence && c.recurrence !== 'manual' ? `<span class="pill pill-recur">${esc(c.recurrence)}</span>` : ''}
-              ${isMulti ? `<span class="pill pill-multi">0/${c.occurrences_required}×</span>` : ''}
+              ${isMulti ? `<span class="pill pill-multi">${done}/${total}×</span>` : ''}
               ${!isOpt ? '<span class="pill pill-due">Due</span>' : ''}
             </div>
-            ${isMulti ? `<div class="occ-track">${Array.from({length:c.occurrences_required},()=>'<span class="occ-dot"></span>').join('')}</div>` : ''}
+            ${isMulti ? `<div class="occ-track">${Array.from({length:total},(_,i) =>
+              `<span class="occ-dot${i < done ? ' done' : ''}"></span>`).join('')}</div>` : ''}
           </div>
         </div>
         ${!isOpt ? `<div class="chore-actions">
           ${isMulti
-            ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log occurrence</button>`
+            ? `<button class="btn btn-primary" data-action="log-occ" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Log ${nextOcc}/${total} ✓</button>`
             : `<button class="btn btn-primary" data-action="complete" data-chore="${esc(c.id)}" data-child="${esc(child.childEntryId)}">Mark done ✓</button>`}
           <button class="btn btn-ghost" data-action="open-pause" data-chore="${esc(c.id)}" data-chore-name="${esc(c.name)}">Pause</button>
           <button class="btn btn-ghost" data-action="open-edit" data-chore-json="${choreJson}">✏️</button>
@@ -624,7 +631,6 @@ class HapmPanelCard extends HTMLElement {
     </div>`;
   }
 
-  // ── Bind events ───────────────────────────────────────────────────────────
   _bindEvents() {
     const sr = this.shadowRoot;
 
@@ -651,7 +657,6 @@ class HapmPanelCard extends HTMLElement {
       }
     });
 
-    // ── Add chore modal
     sr.getElementById('m-add-cancel')?.addEventListener('click', () => this._closeModal('modal-add'));
     sr.getElementById('m-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('m-occ').value) || 1;
@@ -676,7 +681,7 @@ class HapmPanelCard extends HTMLElement {
         if (!this._optimisticChores[childId]) this._optimisticChores[childId] = [];
         this._optimisticChores[childId].push({
           id: '_opt_' + Date.now(), name, description: desc || null, value,
-          recurrence: recur, occurrences_required: occ,
+          recurrence: recur, occurrences_required: occ, occurrences_completed: 0,
           _optimistic: true, _expiresAt: expiresAt,
         });
       });
@@ -690,7 +695,6 @@ class HapmPanelCard extends HTMLElement {
       });
     });
 
-    // ── Edit chore modal
     sr.getElementById('m-edit-cancel')?.addEventListener('click', () => this._closeModal('modal-edit'));
     sr.getElementById('e-occ')?.addEventListener('input', () => {
       const occ = parseInt(sr.getElementById('e-occ').value) || 1;
@@ -717,7 +721,6 @@ class HapmPanelCard extends HTMLElement {
       });
     });
 
-    // ── Holiday modal
     sr.getElementById('m-holiday-cancel')?.addEventListener('click', () => this._closeModal('modal-holiday'));
     sr.getElementById('m-holiday-submit')?.addEventListener('click', () => {
       const days = parseInt(sr.getElementById('m-holiday-days').value) || 7;
@@ -729,7 +732,6 @@ class HapmPanelCard extends HTMLElement {
       this._updateDOM();
     });
 
-    // ── Pay modal
     sr.getElementById('m-pay-cancel')?.addEventListener('click', () => this._closeModal('modal-pay'));
     sr.getElementById('m-pay-submit')?.addEventListener('click', () => {
       const child = this._activeChild;
@@ -741,7 +743,6 @@ class HapmPanelCard extends HTMLElement {
       this._callService('mark_paid', { child_entry_id: child.childEntryId });
     });
 
-    // ── Pause modal
     sr.getElementById('m-pause-cancel')?.addEventListener('click', () => this._closeModal('modal-pause'));
     sr.getElementById('m-pause-submit')?.addEventListener('click', () => {
       const choreId = sr.getElementById('modal-pause').dataset.choreId;
@@ -754,7 +755,6 @@ class HapmPanelCard extends HTMLElement {
     });
   }
 
-  // ── Action dispatcher ─────────────────────────────────────────────────────
   _handleAction(e) {
     const el     = e.currentTarget;
     const action = el.dataset.action;
