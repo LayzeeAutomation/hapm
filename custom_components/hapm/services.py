@@ -63,6 +63,7 @@ SCHEMA_ADD_CHORE = vol.Schema(
             [ASSIGNMENT_MODE_INDIVIDUAL, ASSIGNMENT_MODE_TEAM]
         ),
         vol.Optional("pay_split_mode", default="full"): vol.In(["shared", "full"]),
+        vol.Optional("category", default="tidying"): cv.string,
     }
 )
 
@@ -79,6 +80,7 @@ SCHEMA_UPDATE_CHORE = vol.Schema(
         vol.Optional("pay_mode"): vol.In(
             [PAY_MODE_PER_OCCURRENCE, PAY_MODE_ON_COMPLETION]
         ),
+        vol.Optional("category"): cv.string,
     }
 )
 
@@ -135,13 +137,6 @@ def _fire_data_changed(hass: HomeAssistant) -> None:
 
 
 def _window_days_for_recurrence(recurrence: str, occurrences: int) -> int:
-    """Derive a sensible occurrence window from the chore's recurrence.
-
-    - daily   -> 1 day   (all occurrences must happen within the same day)
-    - weekly  -> 7 days  (within the week)
-    - monthly -> 30 days (within the month)
-    - manual  -> occurrences * 7  (fallback: one week per required occurrence)
-    """
     if recurrence == RECURRENCE_DAILY:
         return 1
     if recurrence == RECURRENCE_WEEKLY:
@@ -151,16 +146,40 @@ def _window_days_for_recurrence(recurrence: str, occurrences: int) -> int:
     return occurrences * 7
 
 
+def _start_of_day(dt: datetime) -> datetime:
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _next_monday(dt: datetime, interval_weeks: int = 1) -> datetime:
+    base = _start_of_day(dt)
+    days_until = (7 - base.weekday()) % 7
+    if days_until == 0:
+        days_until = 7 * interval_weeks
+    else:
+        days_until += 7 * (interval_weeks - 1)
+    return base + timedelta(days=days_until)
+
+
+def _first_of_next_month(dt: datetime, interval_months: int = 1) -> datetime:
+    base = _start_of_day(dt)
+    year = base.year
+    month = base.month + interval_months
+    while month > 12:
+        month -= 12
+        year += 1
+    return base.replace(year=year, month=month, day=1)
+
+
 def _calculate_next_due(chore: Chore) -> datetime | None:
     if chore.recurrence == RECURRENCE_MANUAL:
         return None
     base = datetime.utcnow()
     if chore.recurrence == RECURRENCE_DAILY:
-        return base + timedelta(days=chore.interval)
+        return _start_of_day(base) + timedelta(days=chore.interval)
     if chore.recurrence == RECURRENCE_WEEKLY:
-        return base + timedelta(weeks=chore.interval)
+        return _next_monday(base, chore.interval)
     if chore.recurrence == RECURRENCE_MONTHLY:
-        return base + timedelta(days=30 * chore.interval)
+        return _first_of_next_month(base, chore.interval)
     return None
 
 
@@ -211,7 +230,6 @@ async def handle_add_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssist
         recurrence=recurrence,
         interval=data.get("interval", 1),
         occurrences_required=occurrences_required,
-        # Window auto-derived from recurrence — not exposed to the user.
         occurrence_window_days=(
             _window_days_for_recurrence(recurrence, occurrences_required)
             if occurrences_required > 1 else None
@@ -220,8 +238,9 @@ async def handle_add_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssist
         assignment_mode=data.get("assignment_mode", ASSIGNMENT_MODE_INDIVIDUAL),
         pay_split_mode=data.get("pay_split_mode", "full"),
     )
+    setattr(chore, "category", data.get("category", "tidying"))
     if chore.recurrence != RECURRENCE_MANUAL:
-        chore.next_due = datetime.utcnow()
+        chore.next_due = _calculate_next_due(chore)
 
     await store.async_add_chore(chore)
     _fire_data_changed(hass)
@@ -229,7 +248,6 @@ async def handle_add_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssist
 
 
 async def handle_update_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
-    """Patch mutable fields on an existing chore without touching schedule state."""
     data = call.data
     chore_id = data["chore_id"]
     chore = store.get_chore(chore_id)
@@ -244,13 +262,16 @@ async def handle_update_chore(call: ServiceCall, store: HAPMStore, hass: HomeAss
         chore.value = data["value"]
     if "recurrence" in data:
         chore.recurrence = data["recurrence"]
-        if chore.recurrence != RECURRENCE_MANUAL and chore.next_due is None:
-            chore.next_due = datetime.utcnow()
+        if chore.recurrence != RECURRENCE_MANUAL:
+            chore.next_due = _calculate_next_due(chore)
+        else:
+            chore.next_due = None
     if "pay_mode" in data:
         chore.pay_mode = data["pay_mode"]
     if "occurrences_required" in data:
         chore.occurrences_required = data["occurrences_required"]
-    # Always re-derive window when occurrences or recurrence changes
+    if "category" in data:
+        setattr(chore, "category", data["category"])
     if "occurrences_required" in data or "recurrence" in data:
         chore.occurrence_window_days = (
             _window_days_for_recurrence(chore.recurrence, chore.occurrences_required)
@@ -278,7 +299,7 @@ async def handle_complete_chore(call: ServiceCall, store: HAPMStore, hass: HomeA
         )
 
     amount = _calculate_per_child_amount(chore)
-    events = _credit_children(chore, child_entry_id, amount, EVENT_CHORE_COMPLETED, note=note)
+    events = _credit_children(chore, child_entry_id, amount, EVENT_CHORE_COMPLETED, note=note or chore.name)
     for event in events:
         await store.async_add_ledger_event(event)
 
@@ -336,11 +357,10 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore, hass: HomeA
     amount = _calculate_per_child_amount(chore)
 
     if chore.pay_mode == PAY_MODE_PER_OCCURRENCE:
-        # Each occurrence earns an equal share of the total value
         per_occ_amount = round(amount / chore.occurrences_required, 2)
         events = _credit_children(
             chore, child_entry_id, per_occ_amount, EVENT_OCCURRENCE_LOGGED,
-            occurrence_number=occurrence_number, note=note,
+            occurrence_number=occurrence_number, note=note or chore.name,
         )
         for event in events:
             await store.async_add_ledger_event(event)
@@ -352,11 +372,10 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore, hass: HomeA
         await store.async_update_chore(chore)
 
         if chore.pay_mode == PAY_MODE_ON_COMPLETION:
-            # Full value paid out only when all occurrences are done
             events = _credit_children(
                 chore, child_entry_id, amount,
                 EVENT_CHORE_COMPLETED,
-                note=f"All {chore.occurrences_required} occurrences complete",
+                note=f"{chore.name} — all {chore.occurrences_required} occurrences complete",
             )
             for event in events:
                 await store.async_add_ledger_event(event)

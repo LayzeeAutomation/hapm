@@ -25,30 +25,69 @@ SCHEDULER_INTERVAL = timedelta(minutes=1)
 DATA_SCHEDULER_UNSUB = "scheduler_unsub"
 
 
+def _start_of_day(dt: datetime) -> datetime:
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _next_monday(dt: datetime, interval_weeks: int = 1) -> datetime:
+    base = _start_of_day(dt)
+    days_until = (7 - base.weekday()) % 7
+    if days_until == 0:
+        days_until = 7 * interval_weeks
+    else:
+        days_until += 7 * (interval_weeks - 1)
+    return base + timedelta(days=days_until)
+
+
+def _first_of_next_month(dt: datetime, interval_months: int = 1) -> datetime:
+    base = _start_of_day(dt)
+    year = base.year
+    month = base.month + interval_months
+    while month > 12:
+        month -= 12
+        year += 1
+    return base.replace(year=year, month=month, day=1)
+
+
+def _calculate_next_due_from(now: datetime, recurrence: str, interval: int) -> datetime | None:
+    if recurrence == RECURRENCE_MANUAL:
+        return None
+    if recurrence == RECURRENCE_DAILY:
+        return _start_of_day(now) + timedelta(days=interval)
+    if recurrence == RECURRENCE_WEEKLY:
+        return _next_monday(now, interval)
+    if recurrence == RECURRENCE_MONTHLY:
+        return _first_of_next_month(now, interval)
+    return None
+
+
 def _advance_next_due(next_due: datetime, recurrence: str, interval: int) -> datetime:
-    """Return the next_due after skipping past missed cycles."""
+    """Return the next calendar-aligned due date after now."""
     now = datetime.utcnow()
-    while next_due <= now:
-        if recurrence == RECURRENCE_DAILY:
+    if recurrence == RECURRENCE_DAILY:
+        while next_due <= now:
             next_due += timedelta(days=interval)
-        elif recurrence == RECURRENCE_WEEKLY:
+        return _start_of_day(next_due)
+    if recurrence == RECURRENCE_WEEKLY:
+        while next_due <= now:
             next_due += timedelta(weeks=interval)
-        elif recurrence == RECURRENCE_MONTHLY:
-            next_due += timedelta(days=30 * interval)
-        else:
-            break
+        return _start_of_day(next_due)
+    if recurrence == RECURRENCE_MONTHLY:
+        while next_due <= now:
+            next_due = _first_of_next_month(next_due, interval)
+        return _start_of_day(next_due)
     return next_due
 
 
 async def _run_scheduler(hass: HomeAssistant, store: HAPMStore, _now: datetime) -> None:
-    """Refresh sensor state so due chores are reflected.
+    """Refresh chores and silently roll recurring schedules forward.
 
-    next_due is ONLY advanced when:
-    - A chore is completed (handle_complete_chore / handle_log_occurrence)
-    - A chore is paused or holiday mode is active (advance silently so they
-      don't pile up on return)
-
-    We never fire persistent notifications here.
+    Rules:
+    - Daily chores roll to the next day boundary.
+    - Weekly chores are due on Mondays and silently roll to the next Monday if missed.
+    - Monthly chores are due on the 1st and silently roll to the next 1st if missed.
+    - Holiday mode and individual pause still suppress visibility and also advance overdue
+      recurring chores so nothing piles up.
     """
     now = datetime.utcnow()
     global_state = store.global_state
@@ -59,33 +98,27 @@ async def _run_scheduler(hass: HomeAssistant, store: HAPMStore, _now: datetime) 
         if not chore.enabled:
             continue
         if chore.next_due is None:
+            chore.next_due = _calculate_next_due_from(now, chore.recurrence, chore.interval)
+            await store.async_update_chore(chore)
             continue
 
-        # Holiday mode: silently advance so chores don't pile up
-        if global_state.holiday_mode and global_state.holiday_paused_until:
-            if now < global_state.holiday_paused_until:
-                if chore.next_due <= now:
-                    chore.next_due = _advance_next_due(
-                        chore.next_due, chore.recurrence, chore.interval
-                    )
-                    await store.async_update_chore(chore)
-                continue
-
-        # Individually paused: silently advance
-        if chore.paused_until and now < chore.paused_until:
+        if global_state.holiday_mode and global_state.holiday_paused_until and now < global_state.holiday_paused_until:
             if chore.next_due <= now:
-                chore.next_due = _advance_next_due(
-                    chore.next_due, chore.recurrence, chore.interval
-                )
+                chore.next_due = _advance_next_due(chore.next_due, chore.recurrence, chore.interval)
                 await store.async_update_chore(chore)
             continue
 
-        # Active and due: just log. Sensors pick this up via EVENT_HAPM_DATA_CHANGED.
-        # Do NOT advance next_due here — that happens only on completion.
-        if chore.next_due <= now:
-            _LOGGER.debug("HAPM scheduler: chore '%s' is due.", chore.name)
+        if chore.paused_until and now < chore.paused_until:
+            if chore.next_due <= now:
+                chore.next_due = _advance_next_due(chore.next_due, chore.recurrence, chore.interval)
+                await store.async_update_chore(chore)
+            continue
 
-    # Fire so sensors re-evaluate due_chores every minute
+        # Active recurring chores also roll forward silently if their date has passed.
+        if chore.next_due <= now:
+            chore.next_due = _advance_next_due(chore.next_due, chore.recurrence, chore.interval)
+            await store.async_update_chore(chore)
+
     hass.bus.async_fire(EVENT_HAPM_DATA_CHANGED)
 
 

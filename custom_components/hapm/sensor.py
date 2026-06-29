@@ -24,7 +24,7 @@ from .store import HAPMStore
 _LOGGER = logging.getLogger(__name__)
 
 SENSOR_UPDATE_INTERVAL = timedelta(minutes=1)
-LEDGER_MAX_ENTRIES = 50  # most-recent entries exposed to the card
+LEDGER_MAX_ENTRIES = 50
 
 
 async def async_setup_entry(
@@ -32,10 +32,9 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up HAPM sensors for a child config entry."""
     store: HAPMStore = hass.data[DOMAIN][DATA_STORE]
     child_name = entry.data[CONF_CHILD_NAME]
-    currency = entry.data.get(CONF_CURRENCY_SYMBOL, "\u00a3")
+    currency = entry.data.get(CONF_CURRENCY_SYMBOL, "£")
     colour = entry.data.get(CONF_AVATAR_COLOUR, "teal")
 
     balance_sensor = HAPMBalanceSensor(
@@ -49,20 +48,10 @@ async def async_setup_entry(
 
 
 class HAPMBalanceSensor(SensorEntity):
-    """Running pocket money balance for one child."""
-
     _attr_state_class = SensorStateClass.TOTAL
     _attr_should_poll = False
 
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        store: HAPMStore,
-        child_entry_id: str,
-        child_name: str,
-        currency: str,
-        colour: str,
-    ) -> None:
+    def __init__(self, hass: HomeAssistant, store: HAPMStore, child_entry_id: str, child_name: str, currency: str, colour: str) -> None:
         self._hass = hass
         self._store = store
         self._child_entry_id = child_entry_id
@@ -77,12 +66,8 @@ class HAPMBalanceSensor(SensorEntity):
         self._unsub_event = None
 
     async def async_added_to_hass(self) -> None:
-        self._unsub_interval = async_track_time_interval(
-            self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL
-        )
-        self._unsub_event = self._hass.bus.async_listen(
-            EVENT_HAPM_DATA_CHANGED, self._on_data_changed
-        )
+        self._unsub_interval = async_track_time_interval(self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL)
+        self._unsub_event = self._hass.bus.async_listen(EVENT_HAPM_DATA_CHANGED, self._on_data_changed)
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_interval:
@@ -105,11 +90,7 @@ class HAPMBalanceSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict:
         all_entries = self._store.get_ledger_for_child(self._child_entry_id)
-        last_payment = next(
-            (e for e in reversed(all_entries) if e.event_type == "payment_made"),
-            None,
-        )
-        # Expose the most-recent N entries newest-first for the card ledger view
+        last_payment = next((e for e in reversed(all_entries) if e.event_type == "payment_made"), None)
         recent = list(reversed(all_entries[-LEDGER_MAX_ENTRIES:]))
         return {
             "entry_id": self._child_entry_id,
@@ -131,19 +112,10 @@ class HAPMBalanceSensor(SensorEntity):
 
 
 class HAPMChoresDueSensor(SensorEntity):
-    """Count of currently active/due chores for one child."""
-
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_should_poll = False
 
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        store: HAPMStore,
-        child_entry_id: str,
-        child_name: str,
-        colour: str,
-    ) -> None:
+    def __init__(self, hass: HomeAssistant, store: HAPMStore, child_entry_id: str, child_name: str, colour: str) -> None:
         self._hass = hass
         self._store = store
         self._child_entry_id = child_entry_id
@@ -157,12 +129,8 @@ class HAPMChoresDueSensor(SensorEntity):
         self._unsub_event = None
 
     async def async_added_to_hass(self) -> None:
-        self._unsub_interval = async_track_time_interval(
-            self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL
-        )
-        self._unsub_event = self._hass.bus.async_listen(
-            EVENT_HAPM_DATA_CHANGED, self._on_data_changed
-        )
+        self._unsub_interval = async_track_time_interval(self._hass, self._async_update_and_write, SENSOR_UPDATE_INTERVAL)
+        self._unsub_event = self._hass.bus.async_listen(EVENT_HAPM_DATA_CHANGED, self._on_data_changed)
 
     async def async_will_remove_from_hass(self) -> None:
         if self._unsub_interval:
@@ -177,6 +145,29 @@ class HAPMChoresDueSensor(SensorEntity):
     @callback
     async def _async_update_and_write(self, _now: datetime) -> None:
         self.async_write_ha_state()
+
+    def _serialize_chore(self, c) -> dict:
+        return {
+            "id": c.id,
+            "name": c.name,
+            "value": c.value,
+            "recurrence": c.recurrence,
+            "next_due": c.next_due.isoformat() if c.next_due else None,
+            "occurrences_required": c.occurrences_required,
+            "occurrences_completed": (
+                self._store.get_open_window(c.id).total_completed
+                if c.occurrences_required > 1 and self._store.get_open_window(c.id)
+                else 0
+            ),
+            "description": c.description,
+            "pay_mode": c.pay_mode,
+            "assignment_mode": getattr(c, "assignment_mode", "individual"),
+            "pay_split_mode": getattr(c, "pay_split_mode", "full"),
+            "category": getattr(c, "category", None),
+            "paused_until": c.paused_until.isoformat() if c.paused_until else None,
+            "last_completed": c.last_completed.isoformat() if c.last_completed else None,
+            "enabled": c.enabled,
+        }
 
     def _get_due_chores(self) -> list:
         now = datetime.utcnow()
@@ -203,58 +194,33 @@ class HAPMChoresDueSensor(SensorEntity):
                 paused.append(chore)
         return paused
 
+    def _get_all_chores(self) -> list:
+        all_chores = []
+        for chore in self._store.get_chores():
+            if self._child_entry_id not in chore.assigned_to:
+                continue
+            if not chore.enabled:
+                continue
+            all_chores.append(chore)
+        return all_chores
+
     @property
     def native_value(self) -> int:
         return len(self._get_due_chores())
 
     @property
     def extra_state_attributes(self) -> dict:
-        due_chores    = self._get_due_chores()
+        due_chores = self._get_due_chores()
         paused_chores = self._get_paused_chores()
+        all_chores = self._get_all_chores()
+        due_ids = {c.id for c in due_chores}
+        paused_ids = {c.id for c in paused_chores}
+        complete_or_not_due = [c for c in all_chores if c.id not in due_ids and c.id not in paused_ids]
         return {
             "entry_id": self._child_entry_id,
             "child_name": self._child_name,
             "avatar_colour": self._colour,
-            "due_chores": [
-                {
-                    "id": c.id,
-                    "name": c.name,
-                    "value": c.value,
-                    "recurrence": c.recurrence,
-                    "next_due": c.next_due.isoformat() if c.next_due else None,
-                    "occurrences_required": c.occurrences_required,
-                    "occurrences_completed": (
-                        self._store.get_open_window(c.id).total_completed
-                        if c.occurrences_required > 1 and self._store.get_open_window(c.id)
-                        else 0
-                    ),
-                    "description": c.description,
-                    "pay_mode": c.pay_mode,
-                    "assignment_mode": getattr(c, "assignment_mode", "individual"),
-                    "pay_split_mode": getattr(c, "pay_split_mode", "full"),
-                    "category": getattr(c, "category", None),
-                }
-                for c in due_chores
-            ],
-            "paused_chores": [
-                {
-                    "id": c.id,
-                    "name": c.name,
-                    "value": c.value,
-                    "recurrence": c.recurrence,
-                    "occurrences_required": c.occurrences_required,
-                    "occurrences_completed": (
-                        self._store.get_open_window(c.id).total_completed
-                        if c.occurrences_required > 1 and self._store.get_open_window(c.id)
-                        else 0
-                    ),
-                    "description": c.description,
-                    "pay_mode": c.pay_mode,
-                    "assignment_mode": getattr(c, "assignment_mode", "individual"),
-                    "pay_split_mode": getattr(c, "pay_split_mode", "full"),
-                    "category": getattr(c, "category", None),
-                    "paused_until": c.paused_until.isoformat() if c.paused_until else None,
-                }
-                for c in paused_chores
-            ],
+            "due_chores": [self._serialize_chore(c) for c in due_chores],
+            "paused_chores": [self._serialize_chore(c) for c in paused_chores],
+            "all_chores": [self._serialize_chore(c) for c in complete_or_not_due],
         }
