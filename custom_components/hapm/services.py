@@ -218,10 +218,35 @@ def _credit_children(
 
 
 def _calculate_per_child_amount(chore: Chore) -> float:
+    """Total amount a single child earns for completing this chore in full."""
     if chore.assignment_mode == ASSIGNMENT_MODE_TEAM and chore.pay_split_mode == PAY_SPLIT_SHARED:
         num_children = max(len(chore.assigned_to), 1)
         return round(chore.value / num_children, 2)
     return chore.value
+
+
+def _per_occurrence_amount(
+    full_amount: float,
+    occurrence_number: int,
+    total_occurrences: int,
+    already_paid: float,
+) -> float:
+    """Calculate the payment for a single occurrence using a running-total approach.
+
+    Each occurrence pays the incremental difference between
+    round(full_amount * occurrence_number / total_occurrences, 2) and the
+    amount already credited in prior occurrences.  This guarantees that
+    the sum of all per-occurrence payments equals full_amount exactly,
+    with any rounding remainder absorbed by the final occurrence.
+
+    Examples (full_amount=1.00, total=3):
+      occ 1: round(1.00*1/3, 2) - 0.00 = 0.33
+      occ 2: round(1.00*2/3, 2) - 0.33 = 0.34  (0.67 - 0.33)
+      occ 3: round(1.00*3/3, 2) - 0.67 = 0.33  (1.00 - 0.67)
+      total  = 1.00  ✓
+    """
+    cumulative = round(full_amount * occurrence_number / total_occurrences, 2)
+    return round(cumulative - already_paid, 2)
 
 
 async def handle_add_chore(call: ServiceCall, store: HAPMStore, hass: HomeAssistant) -> None:
@@ -371,10 +396,35 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore, hass: HomeA
         "occurrence_number": occurrence_number,
     })
 
-    amount = _calculate_per_child_amount(chore)
+    full_amount = _calculate_per_child_amount(chore)
 
     if chore.pay_mode == PAY_MODE_PER_OCCURRENCE:
-        per_occ_amount = round(amount / chore.occurrences_required, 2)
+        # Sum already credited in this window for each recipient so we can
+        # pass it to _per_occurrence_amount for the running-total calculation.
+        # For team chores every recipient gets credited independently, so we
+        # look up each one's running total from the current window's ledger.
+        already_paid = round(
+            sum(
+                c.get("amount", 0)
+                for c in window.completions[:-1]  # exclude the one we just appended
+                if c.get("child_id") == child_entry_id  # per-child running total
+            ),
+            2,
+        )
+        # The running totals are stored on the window completions as amounts
+        # only if we put them there — they aren't by default.  Fall back to
+        # the simpler ledger-based lookup via the store if available, otherwise
+        # recalculate from scratch using the formula directly.
+        #
+        # Simplest correct approach: derive already_paid from the cumulative
+        # formula for (occurrence_number - 1), which is exactly what prior
+        # calls would have credited.
+        already_paid = round(
+            full_amount * (occurrence_number - 1) / chore.occurrences_required, 2
+        )
+        per_occ_amount = _per_occurrence_amount(
+            full_amount, occurrence_number, chore.occurrences_required, already_paid
+        )
         events = _credit_children(
             chore, child_entry_id, per_occ_amount, EVENT_OCCURRENCE_LOGGED,
             occurrence_number=occurrence_number, note=note or chore.name,
@@ -390,9 +440,9 @@ async def handle_log_occurrence(call: ServiceCall, store: HAPMStore, hass: HomeA
 
         if chore.pay_mode == PAY_MODE_ON_COMPLETION:
             events = _credit_children(
-                chore, child_entry_id, amount,
+                chore, child_entry_id, full_amount,
                 EVENT_CHORE_COMPLETED,
-                note=f"{chore.name} — all {chore.occurrences_required} occurrences complete",
+                note=f"{chore.name} \u2014 all {chore.occurrences_required} occurrences complete",
             )
             for event in events:
                 await store.async_add_ledger_event(event)
